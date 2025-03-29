@@ -351,9 +351,6 @@ class CredentialSearcher:
                                     secret_pos = block.find(secret_id)
                                     closest_dist = float('inf')
                                     for candidate in client_id_candidates:
-                                        # Skip if it's ltccxd10yl6cqcn1acx1 (we know it's not the right one)
-                                        if candidate == "ltccxd10yl6cqcn1acx1":
-                                            continue
                                         
                                         pos = block.find(candidate)
                                         dist = abs(pos - secret_pos)
