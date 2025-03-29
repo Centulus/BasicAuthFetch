@@ -16,7 +16,7 @@ This script was designed to facilitate updates for the Crunchyroll addon in Kodi
 
 ## Important Note
 
-Make sure to update the `APKTOOL_PATH` variable in the script to point to your ApkTool installation [ApkTool Installation](https://apktool.org/docs/install/)
+Make sure to update the `APKTOOL_PATH` variable in the script to point to your [ApkTool Installation](https://apktool.org/docs/install/)
 
 ```python
 APKTOOL_PATH = r"D:\ApkTool\apktool.bat"
