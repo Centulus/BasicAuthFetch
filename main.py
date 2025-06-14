@@ -3,7 +3,7 @@ import re
 import time
 import shutil
 import zipfile
-import requests
+import cloudscraper
 import subprocess
 import json
 import base64
@@ -37,6 +37,8 @@ class APKDownloader:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
+        # Initialiser cloudscraper
+        self.scraper = cloudscraper.create_scraper()
     
     def download_crunchyroll_apk(self):
         """Download the latest Crunchyroll APK from APKPremier."""
@@ -46,7 +48,8 @@ class APKDownloader:
         print("Fetching Crunchyroll download page...")
         url = "https://apkpremier.com/com-crunchyroll-crunchyroid/crunchyroll/download/"
         
-        response = requests.get(url, headers=self.headers)
+        # Utiliser cloudscraper au lieu de requests
+        response = self.scraper.get(url, headers=self.headers)
         
         if response.status_code != 200:
             print(f"Failed to access download page. Status code: {response.status_code}")
@@ -100,7 +103,7 @@ class APKDownloader:
         post_headers["Origin"] = "https://apkpremier.com"
         post_headers["Referer"] = url
         
-        post_response = requests.post(url, data=post_data, headers=post_headers)
+        post_response = self.scraper.post(url, data=post_data, headers=post_headers)
         
         if post_response.status_code != 200:
             print(f"Failed to get download link. Status code: {post_response.status_code}")
@@ -136,7 +139,8 @@ class APKDownloader:
         xapk_filename = os.path.join(output_dir, f"Crunchyroll_v{version}.xapk")
         print(f"Downloading XAPK to {xapk_filename}...")
         
-        with requests.get(download_url, headers=self.headers, stream=True) as r:
+        # Utiliser cloudscraper pour le téléchargement en streaming
+        with self.scraper.get(download_url, headers=self.headers, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
             
