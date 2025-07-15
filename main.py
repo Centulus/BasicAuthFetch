@@ -8,13 +8,18 @@ import subprocess
 import json
 import base64
 import multiprocessing
+import platform
+import stat
+import uuid
+import random
 from multiprocessing import Pool
 from bs4 import BeautifulSoup
 
 # Constants and Configuration Settings
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DECOMPILED_DIR = os.path.join(BASE_DIR, "decompiled")
-APKTOOL_PATH = r"D:\ApkTool\apktool.bat"
+APKTOOL_DIR = os.path.join(BASE_DIR, "apktool")
+APKTOOL_PATH = None
 OUTPUT_JSON_FILENAME = "latest.json"
 USER_AGENT_TEMPLATE = "Crunchyroll/{} Android/13 okhttp/4.12.0"
 TARGET_PATTERNS = [
@@ -27,6 +32,176 @@ TARGET_PATTERNS = [
 ]
 
 
+class APKToolInstaller:
+    """Handles automatic installation of APKTool."""
+    
+    def __init__(self):
+        self.base_dir = BASE_DIR
+        self.apktool_dir = APKTOOL_DIR
+        self.scraper = cloudscraper.create_scraper()
+        self.is_windows = platform.system().lower() == "windows"
+        self.is_linux = platform.system().lower() == "linux"
+    
+    def get_apktool_path(self):
+        """Get the path to the installed APKTool executable."""
+        if self.is_windows:
+            return os.path.join(self.apktool_dir, "apktool.bat")
+        else:
+            return os.path.join(self.apktool_dir, "apktool")
+    
+    def is_apktool_installed(self):
+        """Check if APKTool is already installed locally."""
+        apktool_executable = self.get_apktool_path()
+        apktool_jar = os.path.join(self.apktool_dir, "apktool.jar")
+        
+        return (os.path.exists(apktool_executable) and 
+                os.path.exists(apktool_jar) and 
+                os.path.getsize(apktool_jar) > 1000000)  # At least 1MB
+    
+    def install_apktool(self):
+        """Download and install APKTool automatically."""
+        print("=== INSTALLING APKTOOL ===")
+        
+        if not (self.is_windows or self.is_linux):
+            print(f"Unsupported operating system: {platform.system()}")
+            return False
+        
+        # Create apktool directory
+        os.makedirs(self.apktool_dir, exist_ok=True)
+        
+        try:
+            # Step 1: Get installation page and parse links
+            print("Fetching APKTool installation instructions...")
+            install_url = "https://apktool.org/docs/install/"
+            response = self.scraper.get(install_url)
+            
+            if response.status_code != 200:
+                print(f"Failed to access installation page. Status code: {response.status_code}")
+                return False
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Step 2: Download wrapper script
+            print(f"Downloading wrapper script for {platform.system()}...")
+            if self.is_windows:
+                wrapper_link = soup.find('a', href=re.compile(r'.*apktool\.bat$'))
+                wrapper_filename = "apktool.bat"
+            else:  # Linux
+                wrapper_link = soup.find('a', href=re.compile(r'.*scripts/linux/apktool$'))
+                wrapper_filename = "apktool"
+            
+            if not wrapper_link:
+                print("Could not find wrapper script link")
+                return False
+            
+            wrapper_url = wrapper_link['href']
+            wrapper_path = os.path.join(self.apktool_dir, wrapper_filename)
+            
+            wrapper_response = self.scraper.get(wrapper_url)
+            if wrapper_response.status_code != 200:
+                print(f"Failed to download wrapper script. Status code: {wrapper_response.status_code}")
+                return False
+            
+            with open(wrapper_path, 'wb') as f:
+                f.write(wrapper_response.content)
+            
+            # Make executable on Linux
+            if self.is_linux:
+                os.chmod(wrapper_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+            
+            print(f"Wrapper script saved to: {wrapper_path}")
+            
+            # Step 3: Get latest APKTool version from Bitbucket
+            print("Fetching latest APKTool version...")
+            bitbucket_url = "https://bitbucket.org/iBotPeaches/apktool/downloads"
+            bitbucket_response = self.scraper.get(bitbucket_url)
+            
+            if bitbucket_response.status_code != 200:
+                print(f"Failed to access Bitbucket downloads. Status code: {bitbucket_response.status_code}")
+                return False
+            
+            bitbucket_soup = BeautifulSoup(bitbucket_response.text, 'html.parser')
+            
+            # Find the latest apktool jar download link
+            jar_links = bitbucket_soup.find_all('a', href=re.compile(r'.*apktool_.*\.jar$'))
+            if not jar_links:
+                print("Could not find APKTool jar download links")
+                return False
+            
+            # Get the first (latest) jar file
+            latest_jar_link = jar_links[0]['href']
+            if not latest_jar_link.startswith('http'):
+                latest_jar_link = "https://bitbucket.org" + latest_jar_link
+            
+            # Extract version from filename
+            jar_filename = latest_jar_link.split('/')[-1]
+            version_match = re.search(r'apktool_(\d+\.\d+\.\d+)', jar_filename)
+            version = version_match.group(1) if version_match else "unknown"
+            
+            print(f"Found APKTool version: {version}")
+            
+            # Step 4: Download APKTool jar
+            print(f"Downloading {jar_filename}...")
+            jar_response = self.scraper.get(latest_jar_link, stream=True)
+            if jar_response.status_code != 200:
+                print(f"Failed to download APKTool jar. Status code: {jar_response.status_code}")
+                return False
+            
+            jar_path = os.path.join(self.apktool_dir, "apktool.jar")
+            total_size = int(jar_response.headers.get('content-length', 0))
+            
+            with open(jar_path, 'wb') as f:
+                downloaded = 0
+                for chunk in jar_response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            print(f"\rDownload progress: {percent:.1f}% ({downloaded/(1024*1024):.2f} MB / {total_size/(1024*1024):.2f} MB)", end="")
+            
+            print(f"\nAPKTool jar saved to: {jar_path}")
+            
+            # Make jar executable on Linux
+            if self.is_linux:
+                os.chmod(jar_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IROTH)
+            
+            # Step 5: Verify installation by checking files
+            print("Verifying APKTool installation...")
+            
+            # Check wrapper script
+            if not os.path.exists(wrapper_path):
+                print("Wrapper script is missing")
+                return False
+            
+            wrapper_size = os.path.getsize(wrapper_path)
+            if wrapper_size == 0:
+                print("Wrapper script is empty")
+                return False
+            
+            # Check jar file
+            if not os.path.exists(jar_path):
+                print("APKTool jar is missing")
+                return False
+            
+            jar_size = os.path.getsize(jar_path)
+            expected_size = total_size if total_size > 0 else 20000000  # Au moins 20MB
+            
+            if jar_size < expected_size * 0.95:  # Tolérance de 5%
+                print(f"APKTool jar size mismatch. Expected ~{expected_size/(1024*1024):.1f}MB, got {jar_size/(1024*1024):.1f}MB")
+                return False
+            
+            print("APKTool installation successful!")
+            print(f"Wrapper script: {wrapper_size} bytes")
+            print(f"APKTool jar: {jar_size/(1024*1024):.2f} MB")
+            return True
+                
+        except Exception as e:
+            print(f"Error installing APKTool: {e}")
+            return False
+
+
 class APKDownloader:
     """Handles downloading the latest Crunchyroll APK from the web."""
     
@@ -37,7 +212,7 @@ class APKDownloader:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
         }
-
+        # Initialiser cloudscraper
         self.scraper = cloudscraper.create_scraper()
     
     def download_crunchyroll_apk(self):
@@ -48,6 +223,7 @@ class APKDownloader:
         print("Fetching Crunchyroll download page...")
         url = "https://apkpremier.com/com-crunchyroll-crunchyroid/crunchyroll/download/"
         
+        # Utiliser cloudscraper au lieu de requests
         response = self.scraper.get(url, headers=self.headers)
         
         if response.status_code != 200:
@@ -138,6 +314,7 @@ class APKDownloader:
         xapk_filename = os.path.join(output_dir, f"Crunchyroll_v{version}.xapk")
         print(f"Downloading XAPK to {xapk_filename}...")
         
+        # Utiliser cloudscraper pour le téléchargement en streaming
         with self.scraper.get(download_url, headers=self.headers, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -211,10 +388,10 @@ class APKDownloader:
 class APKDecompiler:
     """Handles decompiling APK files to extract smali code."""
     
-    def __init__(self):
+    def __init__(self, apktool_path):
         self.base_dir = BASE_DIR
         self.decompiled_dir = DECOMPILED_DIR
-        self.apktool_path = APKTOOL_PATH
+        self.apktool_path = apktool_path
     
     def decompile_apk(self, apk_path):
         """Decompile the provided APK file."""
@@ -232,14 +409,23 @@ class APKDecompiler:
         print(f"Decompiling {apk_filename}...")
         
         try:
-            # Use Popen instead of run for more control over the process
-            process = subprocess.Popen(
-                [self.apktool_path, 'd', apk_path, '-o', self.decompiled_dir, '-f'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                shell=True
-            )
+            # Utiliser la même approche que pour le test, avec shell=True sur Windows
+            if platform.system().lower() == "windows":
+                cmd = f'"{self.apktool_path}" d "{apk_path}" -o "{self.decompiled_dir}" -f'
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=True
+                )
+            else:
+                process = subprocess.Popen(
+                    [self.apktool_path, 'd', apk_path, '-o', self.decompiled_dir, '-f'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
             
             # Monitor the output in real-time
             for line in iter(process.stdout.readline, ''):
@@ -254,10 +440,13 @@ class APKDecompiler:
                     
                     # Terminate the process to bypass the "Press any key" prompt
                     try:
-                        # On Windows, use taskkill to forcefully terminate the process tree
-                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], 
-                                      stdout=subprocess.DEVNULL, 
-                                      stderr=subprocess.DEVNULL)
+                        if platform.system().lower() == "windows":
+                            # On Windows, use taskkill to forcefully terminate the process tree
+                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], 
+                                          stdout=subprocess.DEVNULL, 
+                                          stderr=subprocess.DEVNULL)
+                        else:
+                            process.terminate()
                     except Exception as kill_error:
                         print(f"Error terminating process: {kill_error}")
                         process.terminate()
@@ -447,6 +636,140 @@ class CredentialSearcher:
             return None, None
 
 
+class CredentialValidator:
+    """Validates extracted Crunchyroll credentials by testing authentication."""
+    
+    def __init__(self):
+        self.scraper = cloudscraper.create_scraper()
+    
+    def generate_random_device(self):
+        """Generate random device information for authentication."""
+        device_types = [
+            "Samsung SM-G998B", "Samsung SM-G991B", "Samsung SM-N986B", "Samsung SM-A525F",
+            "Xiaomi MI 11", "Xiaomi Redmi Note 10", "Xiaomi Mi 10T Pro", "Xiaomi 11T Pro",
+            "OnePlus GM1913", "OnePlus KB2000", "OnePlus LE2117", "OnePlus AC2003",
+            "Google Pixel 6", "Google Pixel 5", "Google Pixel 4a", "Google Pixel 7",
+            "Huawei ELS-NX9", "Huawei VOG-L29", "Huawei ANE-LX1", "Huawei CLT-L29",
+            "Sony XQ-BC72", "Sony XQ-AT72", "Sony G8441", "Sony H8314",
+            "Oppo CPH2173", "Oppo CPH2069", "Oppo PDEM30", "Oppo PEGM00",
+            "Vivo V2154A", "Vivo V2120A", "Vivo V2031A", "Vivo V1955A",
+            "Motorola XT2125-4", "Motorola XT2041-4", "Motorola XT2153-1",
+            "Nokia TA-1198", "Nokia TA-1340", "Nokia TA-1388"
+        ]
+        
+        device_names = [
+            "Galaxy S21 Ultra", "Galaxy S21", "Galaxy Note 20 Ultra", "Galaxy A52",
+            "Mi 11", "Redmi Note 10", "Mi 10T Pro", "11T Pro",
+            "OnePlus 7T", "OnePlus 8T", "OnePlus 9", "OnePlus Nord",
+            "Pixel 6", "Pixel 5", "Pixel 4a", "Pixel 7",
+            "P40 Pro", "P30 Pro", "P20 Lite", "P30",
+            "Xperia 1 III", "Xperia 5 II", "Xperia XZ2", "Xperia XZ3",
+            "Find X3 Pro", "Reno4 Pro", "A94", "Find X2",
+            "X60 Pro", "V21", "Y20s", "X51",
+            "Edge 20", "G9 Plus", "One 5G",
+            "X20", "G50", "C31"
+        ]
+        
+        device_type = random.choice(device_types)
+        device_name = random.choice(device_names)
+        device_id = str(uuid.uuid4())
+        anonymous_id = str(uuid.uuid4())
+        
+        return device_type, device_name, device_id, anonymous_id
+    
+    def validate_credentials(self, auth_token, user_agent):
+        """
+        Validate if the auth_token and user_agent pair is valid.
+        
+        Args:
+            auth_token (str): Basic authorization token
+            user_agent (str): User-Agent string
+        
+        Returns:
+            dict: Validation result with status and details
+        """
+        print("\n=== PHASE 4: VALIDATING CREDENTIALS ===")
+        print(f"Testing authentication with:")
+        print(f"Auth Token: {auth_token}")
+        print(f"User-Agent: {user_agent}")
+        
+        url = "https://www.crunchyroll.com/auth/v1/token"
+        
+        device_type, device_name, device_id, anonymous_id = self.generate_random_device()
+        
+        headers = {
+            "Host": "www.crunchyroll.com",
+            "Content-Length": "127",
+            "authorization": f"Basic {auth_token}",
+            "etp-anonymous-id": anonymous_id,
+            "content-type": "application/x-www-form-urlencoded",
+            "accept-encoding": "gzip",
+            "user-agent": user_agent
+        }
+        
+        data = {
+            "grant_type": "client_id",
+            "device_id": device_id,
+            "device_name": device_name,
+            "device_type": device_type
+        }
+        
+        try:
+            print(f"Sending authentication request to {url}...")
+            print(f"Using device: {device_name} ({device_type})")
+            
+            response = self.scraper.post(url, headers=headers, data=data)
+            
+            # Check if request returns 200
+            if response.status_code == 200:
+                try:
+                    # Check if response contains access_token
+                    response_json = response.json()
+                    if "access_token" in response_json:
+                        print("✅ Authentication SUCCESSFUL - Access token obtained")
+                        return {
+                            'valid': True,
+                            'status_code': response.status_code,
+                            'access_token': response_json.get('access_token', '')[:50] + "...",
+                            'token_type': response_json.get('token_type', ''),
+                            'expires_in': response_json.get('expires_in', ''),
+                            'message': 'Credentials are valid and working'
+                        }
+                    else:
+                        print("❌ Authentication FAILED - No access_token in response")
+                        return {
+                            'valid': False,
+                            'status_code': response.status_code,
+                            'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
+                            'message': 'No access_token in response'
+                        }
+                except json.JSONDecodeError:
+                    print("❌ Authentication FAILED - Non-JSON response")
+                    return {
+                        'valid': False,
+                        'status_code': response.status_code,
+                        'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
+                        'message': 'Non-JSON response received'
+                    }
+            else:
+                print(f"❌ Authentication FAILED - Status code: {response.status_code}")
+                return {
+                    'valid': False,
+                    'status_code': response.status_code,
+                    'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
+                    'message': f'HTTP error: {response.status_code}'
+                }
+                
+        except Exception as e:
+            print(f"❌ Authentication ERROR - Request failed: {e}")
+            return {
+                'valid': False,
+                'status_code': None,
+                'error': str(e),
+                'message': f'Request failed: {e}'
+            }
+
+
 class CrunchyrollAnalyzer:
     """Main class that orchestrates the entire process."""
     
@@ -454,13 +777,38 @@ class CrunchyrollAnalyzer:
         self.base_dir = BASE_DIR
         self.decompiled_dir = DECOMPILED_DIR
         
-        # Initialize components
+        # Initialize APKTool installer
+        self.apktool_installer = APKToolInstaller()
+        
+        # Initialize components (APKDecompiler will be initialized after APKTool setup)
         self.downloader = APKDownloader()
-        self.decompiler = APKDecompiler()
+        self.decompiler = None
+        self.validator = CredentialValidator()
+    
+    def setup_apktool(self):
+        """Setup APKTool (install if necessary)."""
+        global APKTOOL_PATH
+        
+        print("=== APKTOOL SETUP ===")
+        
+        if self.apktool_installer.is_apktool_installed():
+            print("APKTool is already installed locally.")
+            APKTOOL_PATH = self.apktool_installer.get_apktool_path()
+            print(f"Using APKTool at: {APKTOOL_PATH}")
+            return True
+        else:
+            print("APKTool not found. Installing automatically...")
+            if self.apktool_installer.install_apktool():
+                APKTOOL_PATH = self.apktool_installer.get_apktool_path()
+                print(f"APKTool installed successfully at: {APKTOOL_PATH}")
+                return True
+            else:
+                print("Failed to install APKTool automatically.")
+                return False
     
     def generate_latest_json(self, client_id, secret_id, app_version):
         """Generate latest.json file with authentication details."""
-        print("\n=== PHASE 4: GENERATING LATEST.JSON ===")
+        print("\n=== PHASE 5: GENERATING LATEST.JSON ===")
         
         # Create Basic Auth string (base64 encoded clientid:secretid)
         auth_string = f"{client_id}:{secret_id}"
@@ -496,6 +844,14 @@ class CrunchyrollAnalyzer:
         print("=" * 50)
         
         try:
+            # Phase 0: Setup APKTool
+            if not self.setup_apktool():
+                print("APKTool setup failed. Aborting.")
+                return
+            
+            # Initialize decompiler now that we have APKTool path
+            self.decompiler = APKDecompiler(APKTOOL_PATH)
+            
             # Phase 1: Download the APK
             apk_info = self.downloader.download_crunchyroll_apk()
             if not apk_info:
@@ -511,13 +867,25 @@ class CrunchyrollAnalyzer:
             searcher = CredentialSearcher(self.decompiled_dir)
             secret_id, client_id = searcher.find_credentials()
             
-            # Final Results
+            # Validation and Final Results
             if secret_id and client_id:
-                # Phase 4: Generate latest.json
+                # Phase 4: Validate credentials
+                auth_string = f"{client_id}:{secret_id}"
+                auth_bytes = auth_string.encode('ascii')
+                base64_auth = base64.b64encode(auth_bytes).decode('ascii')
+                user_agent = USER_AGENT_TEMPLATE.format(apk_info['version'])
+                
+                validation_result = self.validator.validate_credentials(base64_auth, user_agent)
+                
+                # Phase 5: Generate latest.json
                 latest_json_path = self.generate_latest_json(client_id, secret_id, apk_info['version'])
                 
                 print("\n" + "=" * 50)
-                print("=== EXTRACTION SUCCESSFUL ===")
+                if validation_result['valid']:
+                    print("=== EXTRACTION AND VALIDATION SUCCESSFUL ===")
+                else:
+                    print("=== EXTRACTION COMPLETE - VALIDATION FAILED ===")
+                
                 print(f"Crunchyroll Version: {apk_info['version']}")
                 print(f"File Size: {apk_info['file_size']}")
                 print(f"Client ID: {client_id}")
@@ -525,16 +893,29 @@ class CrunchyrollAnalyzer:
                 print(f"latest.json: {latest_json_path}")
                 print("=" * 50)
                 
-                # Save credentials to a file
+                # Save credentials to a file with validation info
                 creds_file = os.path.join(self.base_dir, f"crunchyroll_credentials_v{apk_info['version']}.txt")
                 with open(creds_file, 'w') as f:
                     f.write(f"Crunchyroll Version: {apk_info['version']}\n")
                     f.write(f"File Size: {apk_info['file_size']}\n")
                     f.write(f"Client ID: {client_id}\n")
                     f.write(f"Secret ID: {secret_id}\n")
-                    f.write(f"Basic Auth: {base64.b64encode(f'{client_id}:{secret_id}'.encode('ascii')).decode('ascii')}\n")
+                    f.write(f"Basic Auth: {base64_auth}\n")
+                    f.write(f"User-Agent: {user_agent}\n")
+                    f.write(f"Validation Status: {'VALID' if validation_result['valid'] else 'INVALID'}\n")
+                    f.write(f"Tested At: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
                 
                 print(f"Credentials saved to: {creds_file}")
+                
+                # Summary message
+                if validation_result['valid']:
+                    print("\n🎉 SUCCESS: Credentials extracted and validated successfully!")
+                    print("The authentication tokens are working and can be used.")
+                else:
+                    print("\n⚠️  WARNING: Credentials extracted but validation failed!")
+                    print("The tokens may be outdated or there might be a network issue.")
+                    print("You can still try using them, but they might not work.")
+                    
             else:
                 print("\nFailed to extract credentials. Try again or check the code.")
                 
