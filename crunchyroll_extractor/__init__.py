@@ -1,0 +1,1 @@
+"""Crunchyroll credential extractor package."""
