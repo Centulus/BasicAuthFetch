@@ -25,8 +25,8 @@ APKTOOL_PATH = r"D:\ApkTool\apktool.bat"
 ## Feature Status
 
 - [x] Compatibility: Windows  
-- [ ] Compatibility: Linux  
-- [ ] Automated setup  
+- [x] Compatibility: Linux  
+- [x] Automated setup  
 
 ## Usage Disclaimer
 
