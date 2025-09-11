@@ -2,7 +2,6 @@ apktool
 .vscode
 crunchyroll_extractor/__pycache__
 decompiled
-gitignore
 download_*
 crunchyroll_credentials*
 latest.json
