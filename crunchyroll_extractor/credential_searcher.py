@@ -30,7 +30,7 @@ class CredentialSearcher:
                             secret_id_match = re.search(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_-]{30,33})"', block)
                             secret_id = secret_id_match.group(1) if secret_id_match else None
                             if secret_id:
-                                client_id_candidates = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9]{20})"', block)
+                                client_id_candidates = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_]{20})"', block)
                                 client_id = "Not found"
                                 if client_id_candidates:
                                     secret_pos = block.find(secret_id)
