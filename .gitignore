@@ -4,4 +4,4 @@ crunchyroll_extractor/__pycache__
 decompiled
 download_*
 crunchyroll_credentials*.txt
-latest-*.json
+latest*.json
