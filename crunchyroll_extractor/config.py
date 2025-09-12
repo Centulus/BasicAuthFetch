@@ -6,9 +6,13 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 DECOMPILED_DIR = os.path.join(PROJECT_ROOT, "decompiled")
 APKTOOL_DIR = os.path.join(PROJECT_ROOT, "apktool")
 OUTPUT_JSON_FILENAME = "latest.json"
+OUTPUT_JSON_FILENAME_TV = "latest-tv.json"
+OUTPUT_JSON_FILENAME_MOBILE = "latest-mobile.json"
 
 # App-specific
-USER_AGENT_TEMPLATE = "Crunchyroll/{} Android/13 okhttp/4.12.0"
+USER_AGENT_TEMPLATE = "Crunchyroll/{} Android/14 okhttp/4.12.0"
+TV_USER_AGENT_TEMPLATE = "Crunchyroll/ANDROIDTV/{} (Android 16; en-US; sdk_gphone64_x86_64)"
+
 TARGET_PATTERNS = [
     "https://www.crunchyroll.com",
     "https://static.crunchyroll.com",
