@@ -14,7 +14,7 @@ class APKDecompiler:
         self.decompiled_dir = DECOMPILED_DIR
         self.apktool_path = apktool_path
 
-    def decompile_apk(self, apk_path: str) -> bool:
+    def decompile_apk(self, apk_path: str, *, keep_manifest: bool = False) -> bool:
         print("\n=== PHASE 2: DECOMPILING APK ===")
         os.makedirs(self.decompiled_dir, exist_ok=True)
         if not os.path.exists(apk_path):
@@ -47,7 +47,7 @@ class APKDecompiler:
                     break
 
             if os.path.exists(self.decompiled_dir) and any(d.startswith("smali") for d in os.listdir(self.decompiled_dir) if os.path.isdir(os.path.join(self.decompiled_dir, d))):
-                self.cleanup_decompiled_dir()
+                self.cleanup_decompiled_dir(keep_manifest=keep_manifest)
                 return True
             print("Decompilation may not have completed successfully. Check the output directory.")
             return False
@@ -55,8 +55,11 @@ class APKDecompiler:
             print(f"Error decompiling {apk_filename}: {e}")
             return False
 
-    def cleanup_decompiled_dir(self):
-        """Remove everything except smali directories from the decompiled output."""
+    def cleanup_decompiled_dir(self, *, keep_manifest: bool = False):
+        """Remove everything except smali directories from the decompiled output.
+
+        If keep_manifest=True, conserve AndroidManifest.xml at root for later parsing (e.g., TV version extraction).
+        """
         print("Cleaning up decompiled directory...")
         items = os.listdir(self.decompiled_dir)
         smali_dirs = []
@@ -64,6 +67,9 @@ class APKDecompiler:
             item_path = os.path.join(self.decompiled_dir, item)
             if os.path.isdir(item_path) and item.startswith("smali"):
                 smali_dirs.append(item)
+                continue
+            if keep_manifest and item == "AndroidManifest.xml":
+                # Preserve manifest if requested
                 continue
             try:
                 if os.path.isdir(item_path):

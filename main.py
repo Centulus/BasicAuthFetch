@@ -19,7 +19,7 @@ from crunchyroll_extractor.config import (
     USER_AGENT_TEMPLATE,
     TV_USER_AGENT_TEMPLATE,
 )
-from crunchyroll_extractor.tv_version_fetcher import get_latest_android_tv_version
+ # TV version fetcher removed: TV version extracted from manifest
 from crunchyroll_extractor.apktool_installer import APKToolInstaller
 from crunchyroll_extractor.apk_decompiler import APKDecompiler
 from crunchyroll_extractor.apk_downloader import APKDownloader
@@ -78,9 +78,18 @@ class CrunchyrollAnalyzer:
         print(f"App Version: {app_version}")
         return output_path
 
+    def _short_mobile_version(self, version: str) -> str:
+        """Return version without last numeric build segment for mobile (e.g. 3.91.1.960 -> 3.91.1)."""
+        if not version:
+            return version
+        parts = version.split('.')
+        if len(parts) > 3 and all(p.isdigit() for p in parts):
+            return '.'.join(parts[:-1])
+        return version
+
     def run(self, manual_package_path: str | None = None, *, mode: str | None = None, clean: bool = True):
         print("=== CRUNCHYROLL CREDENTIAL EXTRACTOR ===")
-        print("This tool will download, decompile, and extract credentials from Crunchyroll APK")
+        print("Downloads (if needed), decompiles and extracts credentials from the Crunchyroll Android app.")
         print("=" * 50)
         apk_output_dir = None
         try:
@@ -90,97 +99,121 @@ class CrunchyrollAnalyzer:
 
             self.decompiler = APKDecompiler(self.apktool_path)
 
-            if manual_package_path:
-                print("Manual mode enabled: using a local APK/XAPK/APKM package.")
+            mode_normalized = (mode or '').lower() if mode else None
+            if mode_normalized == 'tv':
+                if not manual_package_path:
+                    print("TV MODE: You must provide an Android TV APK/XAPK/APKM path (use --manual). Aborting.")
+                    return
+                print("TV MODE: Using provided local package (ensure it is the Android TV build).")
                 apk_info = self.downloader.use_local_package(manual_package_path)
             else:
-                apk_info = self.downloader.download_crunchyroll_apk()
+                if manual_package_path:
+                    print("Manual mode: using local APK/XAPK/APKM package.")
+                    apk_info = self.downloader.use_local_package(manual_package_path)
+                else:
+                    apk_info = self.downloader.download_crunchyroll_apk()
             if not apk_info:
                 print("Failed to download the APK. Aborting.")
                 return
             # remember output dir for cleanup
             apk_output_dir = os.path.dirname(os.path.abspath(apk_info['path'])) if apk_info and apk_info.get('path') else None
 
-            if not self.decompiler.decompile_apk(apk_info['path']):
+            # Keep manifest for TV or auto mode
+            keep_manifest = (mode_normalized in ('tv', 'auto'))
+            if not self.decompiler.decompile_apk(apk_info['path'], keep_manifest=keep_manifest):
                 print("Failed to decompile the APK. Aborting.")
                 return
 
+            # Auto-detect if needed
+            resolved_mode = mode_normalized
+            if mode_normalized == 'auto':
+                from crunchyroll_extractor.manifest_utils import is_android_tv_manifest
+                if is_android_tv_manifest(self.decompiled_dir):
+                    print("[AUTO] Android TV detected (LEANBACK). Using TV mode.")
+                    resolved_mode = 'tv'
+                else:
+                    print("[AUTO] No LEANBACK category found. Using mobile mode.")
+                    resolved_mode = 'mobile'
+
             searcher = CredentialSearcher(self.decompiled_dir)
-            secret_id, client_id = searcher.find_credentials()
+            if resolved_mode == 'tv':
+                secret_id, client_id = searcher.find_tv_credentials()
+            else:
+                secret_id, client_id = searcher.find_credentials()
 
             if secret_id and client_id:
-                auth_string = f"{client_id}:{secret_id}"
-                base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
-                user_agent_mobile = USER_AGENT_TEMPLATE.format(apk_info['version'])
-
-                # Validate using mobile UA by default (back-compat)
-                validation_result = self.validator.validate_credentials(base64_auth, user_agent_mobile)
-
-                # Determine operation mode
-                mode_normalized = (mode or "").lower() if mode else None
-                generate_both = not mode_normalized  # when no flag provided
-
                 latest_paths = []
                 creds_paths = []
+                final_valid = False
+                base64_auth = None
+                tv_validation = None
+                validation_result = None
 
-                # Always produce requested outputs
-                if generate_both or mode_normalized == "mobile":
-                    latest_json_path_mobile = self._generate_latest_json(
-                        client_id, secret_id, apk_info['version'],
-                        user_agent_template=USER_AGENT_TEMPLATE,
-                        output_filename=(OUTPUT_JSON_FILENAME_MOBILE if generate_both else OUTPUT_JSON_FILENAME),
-                    )
-                    latest_paths.append(latest_json_path_mobile)
-                    creds_file_mobile = os.path.join(
-                        self.base_dir,
-                        (f"crunchyroll_credentials_mobile_v{apk_info['version']}.txt" if generate_both else f"crunchyroll_credentials_v{apk_info['version']}.txt")
-                    )
-                    with open(creds_file_mobile, 'w') as f:
-                        f.write(f"Crunchyroll Version: {apk_info['version']}\n")
-                        f.write(f"File Size: {apk_info['file_size']}\n")
-                        f.write(f"Client ID: {client_id}\n")
-                        f.write(f"Secret ID: {secret_id}\n")
-                        f.write(f"Basic Auth: {base64_auth}\n")
-                        f.write(f"User-Agent: {user_agent_mobile}\n")
-                        f.write(f"Validation Status: {'VALID' if validation_result['valid'] else 'INVALID'}\n")
-                        f.write(f"Tested At: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
-                    creds_paths.append(creds_file_mobile)
-
-                if generate_both or mode_normalized == "tv":
-                    tv_version = None
-                    try:
-                        tv_version = get_latest_android_tv_version()
-                    except Exception as e:
-                        print(f"TV version fetch failed: {e}")
-                    tv_version = tv_version or apk_info['version']
+                if resolved_mode == 'tv':
+                    # TV mode: skip mobile validation entirely
+                    auth_string = f"{client_id}:{secret_id}"
+                    base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
+                    from crunchyroll_extractor.manifest_utils import extract_version_from_manifest, enforce_tv_version_format
+                    manifest_version = extract_version_from_manifest(self.decompiled_dir)
+                    tv_version = enforce_tv_version_format(manifest_version or apk_info['version'])
                     user_agent_tv = TV_USER_AGENT_TEMPLATE.format(tv_version)
+                    tv_validation = self.validator.validate_tv_credentials(client_id, secret_id, user_agent_tv)
+                    final_valid = tv_validation.get('valid', False)
+
                     latest_json_path_tv = self._generate_latest_json(
                         client_id, secret_id, tv_version,
                         user_agent_template=TV_USER_AGENT_TEMPLATE,
-                        output_filename=(OUTPUT_JSON_FILENAME_TV if generate_both else OUTPUT_JSON_FILENAME_TV),
+                        output_filename=OUTPUT_JSON_FILENAME_TV,
                     )
                     latest_paths.append(latest_json_path_tv)
-                    creds_file_tv = os.path.join(
-                        self.base_dir,
-                        f"crunchyroll_credentials_tv_v{tv_version}.txt"
-                    )
+                    creds_file_tv = os.path.join(self.base_dir, f"crunchyroll_credentials_tv_v{tv_version}.txt")
                     with open(creds_file_tv, 'w') as f:
                         f.write(f"Crunchyroll TV Version: {tv_version}\n")
                         f.write(f"Client ID: {client_id}\n")
                         f.write(f"Secret ID: {secret_id}\n")
                         f.write(f"Basic Auth: {base64_auth}\n")
                         f.write(f"User-Agent: {user_agent_tv}\n")
-                        f.write(f"Validation Status: {'VALID' if validation_result['valid'] else 'INVALID'}\n")
+                        f.write(f"CF_BM Cookie: {tv_validation.get('cf_bm') or 'None'}\n")
+                        f.write(f"Anonymous Access Token Present: {tv_validation.get('anonymous_access_token_present')}\n")
+                        f.write(f"User Code: {tv_validation.get('user_code') or 'None'}\n")
+                        f.write(f"Device Code: {tv_validation.get('device_code') or 'None'}\n")
+                        f.write(f"Validation Status: {'VALID' if final_valid else 'INVALID'}\n")
                         f.write(f"Tested At: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
                     creds_paths.append(creds_file_tv)
+                else:
+                    # Mobile mode
+                    auth_string = f"{client_id}:{secret_id}"
+                    base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
+                    short_version = self._short_mobile_version(apk_info['version'])
+                    user_agent_mobile = USER_AGENT_TEMPLATE.format(short_version)
+                    validation_result = self.validator.validate_credentials(base64_auth, user_agent_mobile)
+                    final_valid = validation_result['valid']
+
+                    latest_json_path_mobile = self._generate_latest_json(
+                        client_id, secret_id, short_version,
+                        user_agent_template=USER_AGENT_TEMPLATE,
+                        output_filename=OUTPUT_JSON_FILENAME_MOBILE,
+                    )
+                    latest_paths.append(latest_json_path_mobile)
+                    creds_file_mobile = os.path.join(self.base_dir, f"crunchyroll_credentials_mobile_v{short_version}.txt")
+                    with open(creds_file_mobile, 'w') as f:
+                        f.write(f"Crunchyroll Version: {short_version}\n")
+                        f.write(f"File Size: {apk_info['file_size']}\n")
+                        f.write(f"Client ID: {client_id}\n")
+                        f.write(f"Secret ID: {secret_id}\n")
+                        f.write(f"Basic Auth: {base64_auth}\n")
+                        f.write(f"User-Agent: {user_agent_mobile}\n")
+                        f.write(f"Validation Status: {'VALID' if final_valid else 'INVALID'}\n")
+                        f.write(f"Tested At: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
+                    creds_paths.append(creds_file_mobile)
 
                 print("\n" + "=" * 50)
-                if validation_result['valid']:
+                if final_valid:
                     print("=== EXTRACTION AND VALIDATION SUCCESSFUL ===")
                 else:
                     print("=== EXTRACTION COMPLETE - VALIDATION FAILED ===")
 
-                print(f"Crunchyroll Version: {apk_info['version']}")
+                print(f"Crunchyroll Version (raw package): {apk_info['version']}")
                 print(f"File Size: {apk_info['file_size']}")
                 print(f"Client ID: {client_id}")
                 print(f"Secret ID: {secret_id}")
@@ -191,17 +224,21 @@ class CrunchyrollAnalyzer:
                 for cp in creds_paths:
                     print(f"Credentials saved to: {cp}")
 
-                if validation_result['valid']:
+                if final_valid:
                     print("\n🎉 SUCCESS: Credentials extracted and validated successfully!")
-                    print("The authentication tokens are working and can be used.")
+                    if resolved_mode == 'tv':
+                        print("TV device-code validation succeeded.")
                 else:
                     print("\n⚠️  WARNING: Credentials extracted but validation failed!")
-                    print("The tokens may be outdated or there might be a network issue.")
+                    if resolved_mode == 'tv':
+                        print("Device-code flow failed or incomplete.")
+                    else:
+                        print("The tokens may be outdated or there might be a network issue.")
                     print("You can still try using them, but they might not work.")
             else:
-                print("\nFailed to extract credentials. Try again or check the code.")
+                print("\nFailed to extract credentials.")
         except Exception as e:
-            print(f"An error occurred during the process: {e}")
+            print(f"Unexpected error: {e}")
         finally:
             if clean:
                 print("\n=== CLEANUP ===")
@@ -226,7 +263,7 @@ class CrunchyrollAnalyzer:
 def main():
     manual = False
     manual_path = None
-    mode = None  # None -> both, 'tv' -> only tv, 'mobile' -> only mobile
+    mode = None  # 'tv' or 'mobile'; default is mobile
     clean = True
     show_help = False
 
@@ -246,30 +283,45 @@ def main():
         except Exception:
             pass
 
-    if '--tv' in args and '--mobile' in args:
-        mode = None  # both
-    elif '--tv' in args:
+    explicit_tv = '--tv' in args
+    explicit_mobile = '--mobile' in args
+    if explicit_tv and explicit_mobile:
         mode = 'tv'
-    elif '--mobile' in args:
+    elif explicit_tv:
+        mode = 'tv'
+        try:
+            tv_idx = args.index('--tv')
+            if tv_idx + 1 < len(args):
+                nxt = args[tv_idx + 1]
+                if not nxt.startswith('-') and not manual_path:
+                    manual = True
+                    manual_path = nxt
+        except Exception:
+            pass
+    elif explicit_mobile:
         mode = 'mobile'
+    else:
+        # No explicit flag: if --manual => auto-detect, else mobile download
+        mode = 'auto' if manual else 'mobile'
 
     if show_help:
         print("Usage: python main.py [--tv|--mobile] [--manual [path]] [--no-clean] [-h|--help]")
         print("")
         print("Options:")
-        print("  --tv           Generate only Android TV outputs (latest-tv.json + tv credentials)")
-        print("  --mobile       Generate only mobile outputs (latest.json + mobile credentials)")
-        print("  --manual [p]   Use a local APK/XAPK/APKM file (optional path). If omitted, a file dialog opens.")
-        print("  --no-clean     Keep decompiled files and downloaded APK folder after run (default is to clean)")
-        print("  -h, --help     Show this help and exit")
+        print("  --tv [path]    Force Android TV mode. Optional path immediately after flag.")
+        print("  --mobile       Force Android Mobile mode (default when no mode flag).")
+        print("  --manual [p]   Use a local APK/XAPK/APKM; if path omitted a file dialog is opened.")
+        print("                 With --manual only (no mode flag) the manifest is inspected to auto-detect TV.")
+        print("  --no-clean     Keep decompiled and downloaded folders (default: remove).")
+        print("  -h, --help     Show this help and exit.")
         print("")
         print("Behavior:")
-        print("  No flags => generates both latest-mobile.json and latest-tv.json, and both credential files.")
-        sys.exit(0)
+        print("  Default => mobile artifacts only (latest-mobile.json + credentials).")
+        print("  TV mode => credentials from Constants.smali + version from AndroidManifest (versionName_versionCode).")
+        return
 
     if manual and not manual_path:
         print("--manual specified: please select an APK/XAPK/APKM file in the file dialog...")
-        # Open a file picker on Windows if available
         chosen = None
         try:
             if tk is not None:
@@ -277,6 +329,26 @@ def main():
                 root.withdraw()
                 chosen = filedialog.askopenfilename(
                     title="Select APK/XAPK/APKM package",
+                    filetypes=[
+                        ("APK or Bundles", "*.apk *.xapk *.apkm *.zip"),
+                        ("All files", "*.*"),
+                    ],
+                )
+                root.destroy()
+        except Exception as e:
+            print(f"File dialog failed: {e}")
+        manual_path = chosen or None
+
+    # If TV mode and no path yet, open file dialog
+    if mode == 'tv' and not manual_path:
+        print("TV mode: select the Android TV APK/XAPK/APKM package...")
+        chosen = None
+        try:
+            if tk is not None:
+                root = tk.Tk()
+                root.withdraw()
+                chosen = filedialog.askopenfilename(
+                    title="Select Android TV APK/XAPK/APKM package",
                     filetypes=[
                         ("APK or Bundles", "*.apk *.xapk *.apkm *.zip"),
                         ("All files", "*.*"),

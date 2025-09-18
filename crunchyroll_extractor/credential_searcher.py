@@ -13,6 +13,11 @@ class CredentialSearcher:
     def __init__(self, decompiled_dir: str = DECOMPILED_DIR):
         self.decompiled_dir = decompiled_dir
         self.target_patterns = TARGET_PATTERNS
+        # Precompile regex patterns used repeatedly
+        self._re_static_clinit = re.compile(r'\.method static constructor <clinit>\(\)V[\s\S]+?\.end method')
+        self._re_static_generic = re.compile(r'\.method.*?static[\s\S]+?\.end method')
+        self._re_secret = re.compile(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_-]{30,33})"')
+        self._re_client = re.compile(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_]{20})"')
 
     def process_file(self, file_path: str):
         try:
@@ -21,16 +26,16 @@ class CredentialSearcher:
                 pattern_matches = sum(1 for p in self.target_patterns if p in content)
                 if pattern_matches >= 2:
                     static_blocks = []
-                    static_blocks.extend(re.findall(r'\.method static constructor <clinit>\(\)V[\s\S]+?\.end method', content))
-                    static_blocks.extend(re.findall(r'\.method.*?static[\s\S]+?\.end method', content))
+                    static_blocks.extend(self._re_static_clinit.findall(content))
+                    static_blocks.extend(self._re_static_generic.findall(content))
                     results = []
                     for block in static_blocks:
                         matches = sum(1 for p in self.target_patterns if p in block)
                         if matches >= 2:
-                            secret_id_match = re.search(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_-]{30,33})"', block)
+                            secret_id_match = self._re_secret.search(block)
                             secret_id = secret_id_match.group(1) if secret_id_match else None
                             if secret_id:
-                                client_id_candidates = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_]{20})"', block)
+                                client_id_candidates = self._re_client.findall(block)
                                 client_id = "Not found"
                                 if client_id_candidates:
                                     secret_pos = block.find(secret_id)
@@ -102,4 +107,57 @@ class CredentialSearcher:
             return best['secret_id'], best['client_id']
         else:
             print("No matching static blocks found after processing all files.")
+            return None, None
+
+    # ------------------ TV specific (Constants.smali) ------------------
+    def find_tv_credentials(self):
+        """Locate credentials specifically in com/crunchyroll/api/util/Constants.smali.
+
+        Heuristic: first string with plausible client id length (18-24 chars) followed by a nearby
+        string with plausible secret length (28-36). Fallback: first match from each length class.
+        This mirrors typical layout where PROD_CLIENT_ID precedes PROD_CLIENT_SECRET in compiled smali.
+        """
+        print("\n=== PHASE 3 (TV): TARGETING Constants.smali ===")
+        target_rel = os.path.join('smali', 'com', 'crunchyroll', 'api', 'util', 'Constants.smali')
+        # Some builds generate smali_classes2, smali_classes3, etc.
+        candidate_paths = []
+        for root, dirs, files in os.walk(self.decompiled_dir):
+            for file in files:
+                if file == 'Constants.smali' and root.replace('\\', '/').endswith('/com/crunchyroll/api/util'):
+                    candidate_paths.append(os.path.join(root, file))
+        if not candidate_paths:
+            print("Constants.smali not found.")
+            return None, None
+        # Choose shortest path (often primary classes directory)
+        candidate_paths.sort(key=len)
+        constants_path = candidate_paths[0]
+        print(f"Analyzing: {constants_path}")
+        try:
+            with open(constants_path, 'r', encoding='utf-8', errors='ignore') as f:
+                data = f.read()
+            # Collect const-string values
+            strings = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_\-]{4,40})"', data)
+            # Filter by plausible lengths
+            client_candidates = [s for s in strings if 18 <= len(s) <= 24]
+            secret_candidates = [s for s in strings if 28 <= len(s) <= 36]
+            client_id = client_candidates[0] if client_candidates else None
+            secret_id = None
+            # Look at next few strings after client for secret proximity
+            if client_id:
+                idx = strings.index(client_id)
+                following = strings[idx+1: idx+6]
+                for s in following:
+                    if 28 <= len(s) <= 36:
+                        secret_id = s
+                        break
+            if not secret_id and secret_candidates:
+                secret_id = secret_candidates[0]
+            if client_id and secret_id:
+                print(f"Found Client ID: {client_id}")
+                print(f"Found Secret ID: {secret_id}")
+                return secret_id, client_id
+            print("Credentials not found in Constants.smali (heuristic failed).")
+            return None, None
+        except Exception as e:
+            print(f"Error reading Constants.smali: {e}")
             return None, None

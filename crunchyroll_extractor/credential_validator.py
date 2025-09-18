@@ -10,8 +10,14 @@ class CredentialValidator:
     def __init__(self):
         self.scraper = cloudscraper.create_scraper()
 
-    def _generate_random_device(self):
-        devices = [
+    def _generate_random_device(self, category: str = "mobile"):
+        """Return a random (device_type, device_name, device_id, anonymous_id).
+
+        category:
+          - 'mobile' (default)
+          - 'tv'
+        """
+        mobile_devices = [
             ("Samsung SM-G998B", "Galaxy S21 Ultra"),
             ("Samsung SM-G991B", "Galaxy S21"),
             ("Samsung SM-N986B", "Galaxy Note 20 Ultra"),
@@ -51,7 +57,27 @@ class CredentialValidator:
             ("Nokia TA-1340", "G50"),
             ("Nokia TA-1388", "C31"),
         ]
-        device_type, device_name = random.choice(devices)
+        tv_devices = [
+            ("Chromecast HD", "Chromecast"),
+            ("Chromecast 4K", "Chromecast 4K"),
+            ("Nvidia SHIELD Android TV", "NVIDIA Shield"),
+            ("Nvidia SHIELD Pro", "NVIDIA Shield Pro"),
+            ("MiBOX S (MDZ-22-AB)", "Mi Box S"),
+            ("MiBOX 4K", "Mi Box 4K"),
+            ("FireTV AFTMM", "Fire TV Stick 4K"),
+            ("FireTV AFTSSS", "Fire TV Stick 4K Max"),
+            ("Google TV GTV-BT-002", "Chromecast Google TV"),
+            ("Philips TV PUS8506", "Philips 8506"),
+            ("Sony BRAVIA KD-55XH90", "Bravia XH90"),
+            ("Sony BRAVIA KD-55A80J", "Bravia A80J"),
+            ("Hisense ATV A7GQ", "Hisense A7G"),
+            ("TCL TV C825", "TCL C825"),
+            ("TCL TV C735", "TCL C735"),
+            ("Shield Android TV", "Shield TV"),
+            ("Amazon AFTT", "Fire TV 4K"),
+        ]
+        pool = tv_devices if category.lower() == 'tv' else mobile_devices
+        device_type, device_name = random.choice(pool)
         device_id = str(uuid.uuid4())
         anonymous_id = str(uuid.uuid4())
         return device_type, device_name, device_id, anonymous_id
@@ -63,7 +89,7 @@ class CredentialValidator:
         print(f"User-Agent: {user_agent}")
 
         url = "https://www.crunchyroll.com/auth/v1/token"
-        device_type, device_name, device_id, anonymous_id = self._generate_random_device()
+        device_type, device_name, device_id, anonymous_id = self._generate_random_device('mobile')
         headers = {
             "Host": "www.crunchyroll.com",
             "Content-Length": "127",
@@ -127,3 +153,124 @@ class CredentialValidator:
                 'error': str(e),
                 'message': f'Request failed: {e}',
             }
+
+    # ---------------- TV specific flow -----------------
+    def validate_tv_credentials(self, client_id: str, client_secret: str, user_agent: str):
+        """Validate Android TV credentials following the described multi-step flow.
+
+        Steps:
+          1. Seed __cf_bm cookie via a 401 browse request (Bearer empty) -> capture cookie.
+          2. Anonymous token request (grant_type=client_id & scope=offline_access) using client_id & client_secret (Basic or form?)
+             Provided flow shows form with client_secret (no Basic) BUT the example for device/code uses Basic auth.
+             We'll follow the provided examples literally:
+                - Step 2: POST /auth/v1/token with form fields (grant_type, scope, client_id, client_secret) + cookie + ETP-Anonymous-ID
+          3. Device code generation POST /auth/v1/device/code with Basic auth base64(client_id:client_secret) + cookie.
+
+        Returns dict including user_code/device_code on success.
+        """
+        print("\n=== PHASE 4 (TV): VALIDATING TV CREDENTIALS ===")
+        session = self.scraper
+        base = "https://www.crunchyroll.com"
+        browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=10"
+        # Step 1: 401 to get __cf_bm
+        print("[TV] Step 1: Initial browse request to obtain __cf_bm cookie...")
+        headers1 = {
+            "User-Agent": user_agent,
+            "Authorization": "Bearer",  # empty bearer triggers 401
+            "Accept": "application/json",
+            "Accept-Charset": "UTF-8",
+        }
+        cf_cookie = None
+        try:
+            r1 = session.get(browse_url, headers=headers1, allow_redirects=False)
+            set_cookie = r1.headers.get('Set-Cookie', '')
+            if '__cf_bm=' in set_cookie:
+                import re
+                m = re.search(r'__cf_bm=([^;]+)', set_cookie)
+                if m:
+                    cf_cookie = m.group(1)
+                    print(f"[TV] Got __cf_bm cookie fragment: {cf_cookie[:20]}...")
+            if not cf_cookie:
+                print("[TV] Warning: __cf_bm cookie not obtained (continuing anyway).")
+        except Exception as e:
+            print(f"[TV] Browse request failed: {e}")
+
+        # Step 2: Anonymous token request
+        print("[TV] Step 2: Anonymous token request (client_id + client_secret)...")
+        anon_url = f"{base}/auth/v1/token"
+        anonymous_id = str(uuid.uuid4())
+        form_data = {
+            "grant_type": "client_id",
+            "scope": "offline_access",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+        headers2 = {
+            "ETP-Anonymous-ID": anonymous_id,
+            "User-Agent": user_agent,
+            "Accept": "application/json",
+            "Accept-Charset": "UTF-8",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        if cf_cookie:
+            headers2["Cookie"] = f"__cf_bm={cf_cookie}"
+        access_token = None
+        try:
+            r2 = session.post(anon_url, data=form_data, headers=headers2)
+            if r2.status_code == 200:
+                try:
+                    js = r2.json()
+                    access_token = js.get('access_token')
+                    if access_token:
+                        print("[TV] Anonymous access_token acquired (truncated):", access_token[:40] + "...")
+                    else:
+                        print("[TV] No access_token in anonymous response.")
+                except Exception:
+                    print("[TV] Failed to parse JSON from anonymous token response.")
+            else:
+                print(f"[TV] Anonymous token request failed status={r2.status_code}")
+        except Exception as e:
+            print(f"[TV] Anonymous token request error: {e}")
+
+        # Step 3: Device code generation
+        print("[TV] Step 3: Device code generation...")
+        device_url = f"{base}/auth/v1/device/code"
+        import base64 as _b64
+        basic_auth = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        headers3 = {
+            "User-Agent": user_agent,
+            "Accept": "application/json",
+            "Accept-Charset": "UTF-8",
+            "Authorization": f"Basic {basic_auth}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        if cf_cookie:
+            headers3["Cookie"] = f"__cf_bm={cf_cookie}"
+        user_code = None
+        device_code = None
+        try:
+            r3 = session.post(device_url, headers=headers3, data={})
+            if r3.status_code == 200:
+                try:
+                    js = r3.json()
+                    user_code = js.get('user_code')
+                    device_code = js.get('device_code')
+                    if user_code and device_code:
+                        print(f"[TV] Device code OK: user_code={user_code} device_code={device_code}")
+                    else:
+                        print("[TV] Missing user_code/device_code in response.")
+                except Exception:
+                    print("[TV] Failed to parse JSON from device code response.")
+            else:
+                print(f"[TV] Device code request failed status={r3.status_code}")
+        except Exception as e:
+            print(f"[TV] Device code request error: {e}")
+
+        success = user_code is not None and device_code is not None
+        return {
+            'valid': success,
+            'cf_bm': cf_cookie,
+            'anonymous_access_token_present': access_token is not None,
+            'user_code': user_code,
+            'device_code': device_code,
+        }
