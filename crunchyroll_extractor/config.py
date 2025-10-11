@@ -11,7 +11,7 @@ OUTPUT_JSON_FILENAME_MOBILE = "latest-mobile.json"
 
 # App-specific
 USER_AGENT_TEMPLATE = "Crunchyroll/{} Android/14 Ktor http-client"
-TV_USER_AGENT_TEMPLATE = "Crunchyroll/ANDROIDTV/{} (Android 16; en-US; Chromecast)"
+TV_USER_AGENT_TEMPLATE = "Crunchyroll/ANDROIDTV/{} (Android 14; en-US; Chromecast)"
 
 TARGET_PATTERNS = [
     "https://www.crunchyroll.com",
