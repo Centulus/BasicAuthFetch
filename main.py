@@ -22,7 +22,7 @@ from crunchyroll_extractor.config import (
  # TV version fetcher removed: TV version extracted from manifest
 from crunchyroll_extractor.apktool_installer import APKToolInstaller
 from crunchyroll_extractor.apk_decompiler import APKDecompiler
-from crunchyroll_extractor.apk_downloader import APKDownloader
+from crunchyroll_extractor.apk_manager import APKManager
 from crunchyroll_extractor.credential_searcher import CredentialSearcher
 from crunchyroll_extractor.credential_validator import CredentialValidator
 
@@ -34,7 +34,7 @@ class CrunchyrollAnalyzer:
         self.base_dir = PROJECT_ROOT
         self.decompiled_dir = DECOMPILED_DIR
         self.apktool_installer = APKToolInstaller()
-        self.downloader = APKDownloader()
+        self.downloader = APKManager()
         self.decompiler = None
         self.validator = CredentialValidator()
         self.apktool_path = None
@@ -89,7 +89,7 @@ class CrunchyrollAnalyzer:
 
     def run(self, manual_package_path: str | None = None, *, mode: str | None = None, clean: bool = True):
         print("=== CRUNCHYROLL CREDENTIAL EXTRACTOR ===")
-        print("Downloads (if needed), decompiles and extracts credentials from the Crunchyroll Android app.")
+        print("Decompiles a provided package and extracts credentials from the Crunchyroll Android app.")
         print("=" * 50)
         apk_output_dir = None
         try:
@@ -100,20 +100,18 @@ class CrunchyrollAnalyzer:
             self.decompiler = APKDecompiler(self.apktool_path)
 
             mode_normalized = (mode or '').lower() if mode else None
+
+            if not manual_package_path:
+                msg = "You must provide a local APK/XAPK/APKM (or ZIP) path or select one via the file dialog."
+                print(msg)
+                return
             if mode_normalized == 'tv':
-                if not manual_package_path:
-                    print("TV MODE: You must provide an Android TV APK/XAPK/APKM path (use --manual). Aborting.")
-                    return
                 print("TV MODE: Using provided local package (ensure it is the Android TV build).")
-                apk_info = self.downloader.use_local_package(manual_package_path)
             else:
-                if manual_package_path:
-                    print("Manual mode: using local APK/XAPK/APKM package.")
-                    apk_info = self.downloader.use_local_package(manual_package_path)
-                else:
-                    apk_info = self.downloader.download_crunchyroll_apk()
+                print("Using provided local APK/XAPK/APKM package.")
+            apk_info = self.downloader.use_local_package(manual_package_path)
             if not apk_info:
-                print("Failed to download the APK. Aborting.")
+                print("Failed to process the provided package. Aborting.")
                 return
             # remember output dir for cleanup
             apk_output_dir = os.path.dirname(os.path.abspath(apk_info['path'])) if apk_info and apk_info.get('path') else None
@@ -139,7 +137,19 @@ class CrunchyrollAnalyzer:
             if resolved_mode == 'tv':
                 secret_id, client_id = searcher.find_tv_credentials()
             else:
+                # Try mobile first
                 secret_id, client_id = searcher.find_credentials()
+                # If nothing found, attempt TV fallback when manifest indicates a TV build
+                if not (secret_id and client_id):
+                    try:
+                        from crunchyroll_extractor.manifest_utils import is_android_tv_manifest
+                        if is_android_tv_manifest(self.decompiled_dir):
+                            print("\n[Fallback] Mobile scan found nothing; manifest indicates Android TV. Trying TV-specific search...")
+                            secret_id, client_id = searcher.find_tv_credentials()
+                            if secret_id and client_id:
+                                resolved_mode = 'tv'
+                    except Exception as _e:
+                        pass
 
             if secret_id and client_id:
                 latest_paths = []
@@ -261,8 +271,7 @@ class CrunchyrollAnalyzer:
 
 
 def main():
-    manual = False
-    manual_path = None
+    package_path = None
     mode = None  # 'tv' or 'mobile'; default is mobile
     clean = True
     show_help = False
@@ -273,94 +282,70 @@ def main():
         show_help = True
     if '--no-clean' in args:
         clean = False
-    if '--manual' in args:
-        manual = True
-        # Optional path argument after --manual
-        try:
-            idx = args.index('--manual')
-            if idx + 1 < len(args) and not args[idx + 1].startswith('-'):
-                manual_path = args[idx + 1]
-        except Exception:
-            pass
 
     explicit_tv = '--tv' in args
     explicit_mobile = '--mobile' in args
+    # Extract positional path (first arg not starting with '-') if any
+    try:
+        for i, a in enumerate(args):
+            if a.startswith('-'):
+                # Handle optional path after --tv/--mobile
+                if a in ('--tv', '--mobile') and i + 1 < len(args) and not args[i + 1].startswith('-') and not package_path:
+                    package_path = args[i + 1]
+                continue
+            if not package_path:
+                package_path = a
+    except Exception:
+        pass
     if explicit_tv and explicit_mobile:
         mode = 'tv'
     elif explicit_tv:
         mode = 'tv'
-        try:
-            tv_idx = args.index('--tv')
-            if tv_idx + 1 < len(args):
-                nxt = args[tv_idx + 1]
-                if not nxt.startswith('-') and not manual_path:
-                    manual = True
-                    manual_path = nxt
-        except Exception:
-            pass
     elif explicit_mobile:
         mode = 'mobile'
     else:
-        # No explicit flag: if --manual => auto-detect, else mobile download
-        mode = 'auto' if manual else 'mobile'
+        # No explicit mode flag: default to auto-detect after decompile
+        mode = 'auto'
 
     if show_help:
-        print("Usage: python main.py [--tv|--mobile] [--manual [path]] [--no-clean] [-h|--help]")
+        print("Usage: python main.py [--tv|--mobile] [path] [--no-clean] [-h|--help]")
         print("")
         print("Options:")
         print("  --tv [path]    Force Android TV mode. Optional path immediately after flag.")
-        print("  --mobile       Force Android Mobile mode (default when no mode flag).")
-        print("  --manual [p]   Use a local APK/XAPK/APKM; if path omitted a file dialog is opened.")
-        print("                 With --manual only (no mode flag) the manifest is inspected to auto-detect TV.")
+        print("  --mobile       Force Android Mobile mode.")
+        print("  path           Optional positional path to APK/XAPK/APKM/APKS/ZIP. If omitted, a file dialog opens.")
         print("  --no-clean     Keep decompiled and downloaded folders (default: remove).")
         print("  -h, --help     Show this help and exit.")
         print("")
         print("Behavior:")
-        print("  Default => mobile artifacts only (latest-mobile.json + credentials).")
+        print("  No web fetching. A local package is mandatory.")
+        print("  Default (no --tv/--mobile) => auto-detect via manifest: TV if LEANBACK (or leanback feature), else Mobile.")
+        print("  Mobile => outputs latest-mobile.json + credentials (version inferred from filename).")
         print("  TV mode => credentials from Constants.smali + version from AndroidManifest (versionName_versionCode).")
         return
 
-    if manual and not manual_path:
-        print("--manual specified: please select an APK/XAPK/APKM file in the file dialog...")
+    # If a package path is not provided, open file dialog to select one
+    if not package_path:
+        print("Select the APK/XAPK/APKM package...")
         chosen = None
         try:
             if tk is not None:
                 root = tk.Tk()
                 root.withdraw()
                 chosen = filedialog.askopenfilename(
-                    title="Select APK/XAPK/APKM package",
+                    title="Select APK/XAPK/APKM/APKS package",
                     filetypes=[
-                        ("APK or Bundles", "*.apk *.xapk *.apkm *.zip"),
+                        ("APK or Bundles", "*.apk *.xapk *.apkm *.apks *.zip"),
                         ("All files", "*.*"),
                     ],
                 )
                 root.destroy()
         except Exception as e:
             print(f"File dialog failed: {e}")
-        manual_path = chosen or None
-
-    # If TV mode and no path yet, open file dialog
-    if mode == 'tv' and not manual_path:
-        print("TV mode: select the Android TV APK/XAPK/APKM package...")
-        chosen = None
-        try:
-            if tk is not None:
-                root = tk.Tk()
-                root.withdraw()
-                chosen = filedialog.askopenfilename(
-                    title="Select Android TV APK/XAPK/APKM package",
-                    filetypes=[
-                        ("APK or Bundles", "*.apk *.xapk *.apkm *.zip"),
-                        ("All files", "*.*"),
-                    ],
-                )
-                root.destroy()
-        except Exception as e:
-            print(f"File dialog failed: {e}")
-        manual_path = chosen or None
+        package_path = chosen or None
 
     analyzer = CrunchyrollAnalyzer()
-    analyzer.run(manual_path, mode=mode, clean=clean)
+    analyzer.run(package_path, mode=mode, clean=clean)
 
 
 if __name__ == "__main__":
