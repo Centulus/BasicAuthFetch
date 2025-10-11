@@ -118,46 +118,70 @@ class CredentialSearcher:
         This mirrors typical layout where PROD_CLIENT_ID precedes PROD_CLIENT_SECRET in compiled smali.
         """
         print("\n=== PHASE 3 (TV): TARGETING Constants.smali ===")
-        target_rel = os.path.join('smali', 'com', 'crunchyroll', 'api', 'util', 'Constants.smali')
-        # Some builds generate smali_classes2, smali_classes3, etc.
+
+        # 1) Collect all Constants.smali files under any smali* directory.
         candidate_paths = []
         for root, dirs, files in os.walk(self.decompiled_dir):
             for file in files:
-                if file == 'Constants.smali' and root.replace('\\', '/').endswith('/com/crunchyroll/api/util'):
+                if file == 'Constants.smali':
                     candidate_paths.append(os.path.join(root, file))
         if not candidate_paths:
-            print("Constants.smali not found.")
+            print("Constants.smali not found anywhere in smali output.")
             return None, None
-        # Choose shortest path (often primary classes directory)
-        candidate_paths.sort(key=len)
-        constants_path = candidate_paths[0]
-        print(f"Analyzing: {constants_path}")
-        try:
-            with open(constants_path, 'r', encoding='utf-8', errors='ignore') as f:
-                data = f.read()
-            # Collect const-string values
-            strings = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_\-]{4,40})"', data)
-            # Filter by plausible lengths
-            client_candidates = [s for s in strings if 18 <= len(s) <= 24]
-            secret_candidates = [s for s in strings if 28 <= len(s) <= 36]
-            client_id = client_candidates[0] if client_candidates else None
-            secret_id = None
-            # Look at next few strings after client for secret proximity
-            if client_id:
-                idx = strings.index(client_id)
-                following = strings[idx+1: idx+6]
-                for s in following:
-                    if 28 <= len(s) <= 36:
-                        secret_id = s
-                        break
-            if not secret_id and secret_candidates:
-                secret_id = secret_candidates[0]
-            if client_id and secret_id:
-                print(f"Found Client ID: {client_id}")
-                print(f"Found Secret ID: {secret_id}")
-                return secret_id, client_id
-            print("Credentials not found in Constants.smali (heuristic failed).")
-            return None, None
-        except Exception as e:
-            print(f"Error reading Constants.smali: {e}")
-            return None, None
+
+        def rank(p: str) -> tuple:
+            pl = p.replace('\\', '/').lower()
+            # Prefer canonical package first, then any under com/crunchyroll
+            score = 0
+            if '/com/crunchyroll/api/util/' in pl:
+                score -= 10
+            elif '/com/crunchyroll/api/' in pl:
+                score -= 8
+            elif '/com/crunchyroll/' in pl:
+                score -= 6
+            # Prefer primary smali dir over smali_classesN
+            if '/smali_classes' in pl:
+                score += 1
+            # Shorter paths slightly preferred
+            return (score, len(pl))
+
+        candidate_paths.sort(key=rank)
+
+        # 2) Iterate candidates until we successfully extract a plausible pair
+        for constants_path in candidate_paths:
+            print(f"Analyzing: {constants_path}")
+            try:
+                with open(constants_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    data = f.read()
+                # Collect const-string values
+                strings = re.findall(r'const-string\s+[vp]\d+,\s+"([A-Za-z0-9_\-]{4,40})"', data)
+                if not strings:
+                    continue
+                # Filter by plausible lengths
+                client_candidates = [s for s in strings if 18 <= len(s) <= 24]
+                secret_candidates = [s for s in strings if 28 <= len(s) <= 36]
+                client_id = client_candidates[0] if client_candidates else None
+                secret_id = None
+                # Look at next few strings after client for secret proximity
+                if client_id:
+                    try:
+                        idx = strings.index(client_id)
+                    except ValueError:
+                        idx = -1
+                    if idx >= 0:
+                        following = strings[idx+1: idx+8]
+                        for s in following:
+                            if 28 <= len(s) <= 36:
+                                secret_id = s
+                                break
+                if not secret_id and secret_candidates:
+                    secret_id = secret_candidates[0]
+                if client_id and secret_id:
+                    print(f"Found Client ID: {client_id}")
+                    print(f"Found Secret ID: {secret_id}")
+                    return secret_id, client_id
+            except Exception as e:
+                print(f"Error reading {constants_path}: {e}")
+
+        print("Credentials not found in any Constants.smali candidates.")
+        return None, None

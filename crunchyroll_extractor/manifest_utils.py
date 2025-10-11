@@ -26,7 +26,16 @@ def is_android_tv_manifest(decompiled_dir: str = DECOMPILED_DIR) -> bool:
     try:
         with open(manifest_path, 'r', encoding='utf-8', errors='ignore') as f:
             data = f.read()
-        return 'android.intent.category.LEANBACK_LAUNCHER' in data
+        # Primary signal: Leanback launcher category
+        if 'android.intent.category.LEANBACK_LAUNCHER' in data:
+            return True
+        # Additional signals commonly present in TV builds
+        if 'android.software.leanback' in data:
+            return True
+        # Touchscreen not required is typical for TV
+        if 'android.hardware.touchscreen' in data and 'android:required="false"' in data:
+            return True
+        return False
     except Exception:
         return False
 
