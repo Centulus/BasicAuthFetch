@@ -1,23 +1,23 @@
 # Crunchyroll Basic Auth Generator
 
-Python script that automatically fetches and generates up‑to‑date Basic Auth credentials (Base64 pair + User-Agent) for the Crunchyroll Android app (mobile or Android TV).
+Python script to generate Basic Auth credentials (Base64 pair + User-Agent) for the Crunchyroll Android app (mobile or Android TV) from a package you provide locally. Online APK fetching has been removed: always supply your own APK/XAPK/APKM.
 
 ## How It Works
 
-1. Downloads the latest public Crunchyroll mobile APK (unless you supply your own file with `--manual`).
-2. Decompiles it with ApkTool (auto‑installed locally into `apktool/` if missing).
-3. Locates `client_id` and `client_secret` in smali using regex pattern scanning.
-4. Builds the string `client_id:client_secret` and Base64‑encodes it.
-5. Generates a JSON file (`latest-mobile.json` or `latest-tv.json`) containing: Base64 auth, User-Agent, version.
-6. Writes a text credential summary file including validation results.
+1. You provide an APK/XAPK/APKM/APKS (or ZIP) via a positional path or the file dialog.
+2. It decompiles the APK with ApkTool (auto‑installed locally into `apktool/` if missing).
+3. It locates `client_id` and `client_secret` in smali using regex pattern scanning.
+4. It builds the string `client_id:client_secret` and Base64‑encodes it.
+5. It generates a JSON file (`latest-mobile.json` or `latest-tv.json`) containing: Base64 auth, User-Agent, version.
+6. It writes a text credential summary file including validation results.
 
 ## Modes
 
-The script supports three primary behaviors:
+The script supports three behaviors:
 
-* Mobile (default) → outputs `latest-mobile.json` + `crunchyroll_credentials_mobile_v<version>.txt`.
-* TV (`--tv`) → requires an Android TV APK / bundle (given or selected) and outputs `latest-tv.json` + `crunchyroll_credentials_tv_v<version>.txt`.
-* Auto‑detection (when `--manual` is used without `--tv` or `--mobile`) → inspects the decompiled `AndroidManifest.xml`; if a LEANBACK category is found it switches to TV mode, else Mobile.
+* Mobile (`--mobile`) → outputs `latest-mobile.json` + `crunchyroll_credentials_mobile_v<version>.txt`. A local package is mandatory.
+* TV (`--tv`) → requires an Android TV APK / bundle and outputs `latest-tv.json` + `crunchyroll_credentials_tv_v<version>.txt`.
+* Auto‑detection (default when no mode flag is provided) → inspects the decompiled `AndroidManifest.xml`; if a LEANBACK category (or leanback feature) is found it switches to TV mode, else Mobile.
 
 ## CLI / Help
 
@@ -28,18 +28,18 @@ python .\main.py --help
 ```
 
 ```text
-Usage: python main.py [--tv|--mobile] [--manual [path]] [--no-clean] [-h|--help]
+Usage: python main.py [--tv|--mobile] [path] [--no-clean] [-h|--help]
 
 Options:
-	--tv [path]    Force Android TV mode. Optional path immediately after flag.
-	--mobile       Force Android Mobile mode (default when no mode flag).
-	--manual [p]   Use a local APK/XAPK/APKM; if path omitted a file dialog is opened.
-								 With --manual only (no mode flag) the manifest is inspected to auto-detect TV.
+	--tv [path]    Force Android TV mode.
+	--mobile       Force Android Mobile mode.
+	path           Optional positional path to APK/XAPK/APKM/APKS/ZIP. If omitted, a file dialog opens.
 	--no-clean     Keep decompiled and downloaded folders (default: remove).
 	-h, --help     Show this help and exit.
 
 Behavior:
-	Default => mobile artifacts only (latest-mobile.json + credentials).
+	Default (no --tv/--mobile) => auto-detect via manifest: TV if LEANBACK (or leanback feature), else Mobile.
+	Mobile => latest-mobile.json + credentials (version inferred from filename when possible).
 	TV mode => credentials from Constants.smali + version from AndroidManifest (versionName_versionCode).
 ```
 
@@ -56,7 +56,7 @@ Field `auth` = Base64(`client_id:client_secret`).
 
 By default the script removes:
 * The `decompiled/` directory
-* The temporary downloaded APK version folder
+* The temporary extracted package folder
 
 Keep them with `--no-clean` for debugging/inspection.
 
