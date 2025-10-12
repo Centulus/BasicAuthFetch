@@ -109,15 +109,24 @@ class CrunchyrollAnalyzer:
                 print("TV MODE: Using provided local package (ensure it is the Android TV build).")
             else:
                 print("Using provided local APK/XAPK/APKM package.")
-            apk_info = self.downloader.use_local_package(manual_package_path)
+            # Generate a short session id for temporary naming
+            import random, string
+            session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            apk_info = self.downloader.use_local_package(manual_package_path, session_id=session_id)
             if not apk_info:
                 print("Failed to process the provided package. Aborting.")
                 return
-            # remember output dir for cleanup
-            apk_output_dir = os.path.dirname(os.path.abspath(apk_info['path'])) if apk_info and apk_info.get('path') else None
+            # remember paths for cleanup/rename
+            apk_output_dir = apk_info.get('output_dir') if apk_info else None
+            session_root = apk_info.get('session_root') if apk_info else None
 
-            # Keep manifest for TV or auto mode
-            keep_manifest = (mode_normalized in ('tv', 'auto'))
+            # Always keep manifest: we rely on it for accurate version detection
+            keep_manifest = True
+            # Set decompiled directory under session root
+            original_decompiled_dir = self.decompiled_dir
+            if session_root:
+                self.decompiled_dir = os.path.join(session_root, "decompiled")
+                self.decompiler.decompiled_dir = self.decompiled_dir
             if not self.decompiler.decompile_apk(apk_info['path'], keep_manifest=keep_manifest):
                 print("Failed to decompile the APK. Aborting.")
                 return
@@ -132,6 +141,12 @@ class CrunchyrollAnalyzer:
                 else:
                     print("[AUTO] No LEANBACK category found. Using mobile mode.")
                     resolved_mode = 'mobile'
+
+            # Extract versions once
+            from crunchyroll_extractor.manifest_utils import extract_version_name_and_code
+            vn, vc = extract_version_name_and_code(self.decompiled_dir)
+            tv_version = f"{vn}_{vc}" if vn and vc else (vn or "unknown")
+            mobile_version = vn or "unknown"
 
             searcher = CredentialSearcher(self.decompiled_dir)
             if resolved_mode == 'tv':
@@ -163,9 +178,6 @@ class CrunchyrollAnalyzer:
                     # TV mode: skip mobile validation entirely
                     auth_string = f"{client_id}:{secret_id}"
                     base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
-                    from crunchyroll_extractor.manifest_utils import extract_version_from_manifest, enforce_tv_version_format
-                    manifest_version = extract_version_from_manifest(self.decompiled_dir)
-                    tv_version = enforce_tv_version_format(manifest_version or apk_info['version'])
                     user_agent_tv = TV_USER_AGENT_TEMPLATE.format(tv_version)
                     tv_validation = self.validator.validate_tv_credentials(client_id, secret_id, user_agent_tv)
                     final_valid = tv_validation.get('valid', False)
@@ -194,20 +206,19 @@ class CrunchyrollAnalyzer:
                     # Mobile mode
                     auth_string = f"{client_id}:{secret_id}"
                     base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
-                    short_version = self._short_mobile_version(apk_info['version'])
-                    user_agent_mobile = USER_AGENT_TEMPLATE.format(short_version)
+                    user_agent_mobile = USER_AGENT_TEMPLATE.format(mobile_version)
                     validation_result = self.validator.validate_credentials(base64_auth, user_agent_mobile)
                     final_valid = validation_result['valid']
 
                     latest_json_path_mobile = self._generate_latest_json(
-                        client_id, secret_id, short_version,
+                        client_id, secret_id, mobile_version,
                         user_agent_template=USER_AGENT_TEMPLATE,
                         output_filename=OUTPUT_JSON_FILENAME_MOBILE,
                     )
                     latest_paths.append(latest_json_path_mobile)
-                    creds_file_mobile = os.path.join(self.base_dir, f"crunchyroll_credentials_mobile_v{short_version}.txt")
+                    creds_file_mobile = os.path.join(self.base_dir, f"crunchyroll_credentials_mobile_v{mobile_version}.txt")
                     with open(creds_file_mobile, 'w') as f:
-                        f.write(f"Crunchyroll Version: {short_version}\n")
+                        f.write(f"Crunchyroll Version: {mobile_version}\n")
                         f.write(f"File Size: {apk_info['file_size']}\n")
                         f.write(f"Client ID: {client_id}\n")
                         f.write(f"Secret ID: {secret_id}\n")
@@ -223,7 +234,9 @@ class CrunchyrollAnalyzer:
                 else:
                     print("=== EXTRACTION COMPLETE - VALIDATION FAILED ===")
 
-                print(f"Crunchyroll Version (raw package): {apk_info['version']}")
+                # Report resolved app version
+                reported_version = tv_version if resolved_mode == 'tv' else mobile_version
+                print(f"Crunchyroll Version: {reported_version}")
                 print(f"File Size: {apk_info['file_size']}")
                 print(f"Client ID: {client_id}")
                 print(f"Secret ID: {secret_id}")
@@ -262,12 +275,45 @@ class CrunchyrollAnalyzer:
                     print(f"Cleanup warning (decompiled): {ce}")
                 # Remove downloaded APK directory (versioned folder)
                 try:
-                    if apk_output_dir and os.path.isdir(apk_output_dir):
+                    if session_root and os.path.isdir(session_root):
                         import shutil
-                        shutil.rmtree(apk_output_dir, ignore_errors=True)
-                        print(f"Removed APK folder: {apk_output_dir}")
+                        shutil.rmtree(session_root, ignore_errors=True)
+                        print(f"Removed session folder: {session_root}")
                 except Exception as ce:
                     print(f"Cleanup warning (apk): {ce}")
+            else:
+                # Rename folders and APK using detected mode and version
+                try:
+                    profile = 'tv' if resolved_mode == 'tv' else 'mobile'
+                    ver_label = tv_version if resolved_mode == 'tv' else mobile_version
+                    # Build target names
+                    base = f"{profile}_v{ver_label}"
+                    if session_root and os.path.isdir(session_root):
+                        new_session = os.path.join(self.base_dir, f"crunchyroll_{base}")
+                        # Compare absolute normalized paths to decide rename without requiring target existence
+                        cur_abs = os.path.normcase(os.path.abspath(session_root))
+                        new_abs = os.path.normcase(os.path.abspath(new_session))
+                        if cur_abs != new_abs:
+                            os.rename(session_root, new_session)
+                            print(f"Renamed session folder to: {new_session}")
+                            session_root = new_session
+                        # Inside session: decompiled and extracted paths remain the same names
+                        # Rename APK file
+                        extracted_dir = os.path.join(session_root, "extracted")
+                        try:
+                            if os.path.isdir(extracted_dir):
+                                for f in os.listdir(extracted_dir):
+                                    if f.lower().endswith('.apk'):
+                                        old_apk = os.path.join(extracted_dir, f)
+                                        new_apk = os.path.join(extracted_dir, f"Crunchyroll_{base}.apk")
+                                        if os.path.normcase(os.path.abspath(old_apk)) != os.path.normcase(os.path.abspath(new_apk)):
+                                            os.rename(old_apk, new_apk)
+                                            print(f"Renamed APK to: {new_apk}")
+                                        break
+                        except Exception:
+                            pass
+                except Exception as ce:
+                    print(f"Post-run rename warning: {ce}")
 
 
 def main():

@@ -2,58 +2,52 @@ import os
 import re
 from .config import DECOMPILED_DIR
 
-def enforce_tv_version_format(version: str) -> str:
-    """Ensure version string uses underscore between name and numeric build if pattern matches.
-
-    Accepts already-correct pattern (name_code). If pattern is name.code (dot) at end with 5+ digits, convert last dot to underscore.
-    Example: 3.45.2.22274 -> 3.45.2_22274
-    """
-    if not version:
-        return version
-    if '_' in version:
-        return version
-    # detect pattern with final .digits
-    m = re.match(r'^([0-9][0-9A-Za-z._-]*?)\.([0-9]{4,})$', version)
-    if m:
-        return f"{m.group(1)}_{m.group(2)}"
-    return version
+"""Utilities for manifest and apktool.yml inspection."""
 
 def is_android_tv_manifest(decompiled_dir: str = DECOMPILED_DIR) -> bool:
-    """Return True if manifest indicates Android TV (LEANBACK launcher category)."""
+    """Return True if manifest indicates Android TV.
+
+    Robust rules (to avoid false positives on mobile builds):
+    - TRUE if the manifest declares a launcher activity with
+      category android.intent.category.LEANBACK_LAUNCHER.
+    - ELSE TRUE if uses-feature android.software.leanback is present with android:required="true".
+    - Otherwise FALSE (even if leanback feature exists with required="false").
+    """
     manifest_path = os.path.join(decompiled_dir, 'AndroidManifest.xml')
     if not os.path.isfile(manifest_path):
         return False
     try:
         with open(manifest_path, 'r', encoding='utf-8', errors='ignore') as f:
             data = f.read()
-        # Primary signal: Leanback launcher category
+        # Primary signal: Leanback launcher category present on a launcher activity
         if 'android.intent.category.LEANBACK_LAUNCHER' in data:
             return True
-        # Additional signals commonly present in TV builds
-        if 'android.software.leanback' in data:
-            return True
-        # Touchscreen not required is typical for TV
-        if 'android.hardware.touchscreen' in data and 'android:required="false"' in data:
+        # Secondary signal: leanback feature explicitly required
+        if re.search(r'<uses-feature\s+[^>]*android:name="android\.software\.leanback"[^>]*android:required="true"', data):
             return True
         return False
     except Exception:
         return False
 
-def extract_version_from_manifest(decompiled_dir: str = DECOMPILED_DIR) -> str | None:
-    """Parse AndroidManifest.xml to build version string 'versionName_versionCode'.
-    Returns None if file not found or parsing fails.
+# Note: version extraction is handled by extract_version_name_and_code with apktool.yml only for now
+
+def extract_version_name_and_code(decompiled_dir: str = DECOMPILED_DIR) -> tuple[str | None, str | None]:
+    """Return (versionName, versionCode) by parsing apktool.yml only.
+
+    This is the most reliable source produced by apktool. If apktool.yml is
+    missing or parsing fails, returns (None, None).
     """
-    manifest_path = os.path.join(decompiled_dir, 'AndroidManifest.xml')
-    if not os.path.isfile(manifest_path):
-        return None
+    apktool_yml = os.path.join(decompiled_dir, 'apktool.yml')
     try:
-        with open(manifest_path, 'r', encoding='utf-8', errors='ignore') as f:
-            data = f.read()
-    # Extract versionName/versionCode attributes (e.g. android:versionName="3.45.2" android:versionCode="22274")
-        name_match = re.search(r'android:versionName="([0-9A-Za-z._-]+)"', data)
-        code_match = re.search(r'android:versionCode="([0-9]+)"', data)
-        if name_match and code_match:
-            return f"{name_match.group(1)}_{code_match.group(1)}"
+        if os.path.isfile(apktool_yml):
+            with open(apktool_yml, 'r', encoding='utf-8', errors='ignore') as f:
+                yml = f.read()
+            m_vn = re.search(r'(?mi)^\s*versionName:\s*([^\r\n#]+)', yml)
+            m_vc = re.search(r'(?mi)^\s*versionCode:\s*([^\r\n#]+)', yml)
+            vn = m_vn.group(1).strip().strip('\'"') if m_vn else None
+            vc = m_vc.group(1).strip().strip('\'"') if m_vc else None
+            if vn or vc:
+                return (vn, vc)
     except Exception:
-        return None
-    return None
+        pass
+    return (None, None)

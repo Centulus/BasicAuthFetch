@@ -68,6 +68,9 @@ class APKDecompiler:
             if os.path.isdir(item_path) and item.startswith("smali"):
                 smali_dirs.append(item)
                 continue
+            # Always preserve apktool.yml for robust version parsing
+            if item == "apktool.yml":
+                continue
             if keep_manifest and item == "AndroidManifest.xml":
                 # Preserve manifest if requested
                 continue

@@ -7,3 +7,5 @@ crunchyroll_credentials*.txt
 latest*.json
 merge.py
 update_latest.txt
+crunchyroll_*
+!crunchyroll_extrator
