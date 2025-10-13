@@ -76,7 +76,27 @@ crunchyroll_{mobile|tv}_v{version}/
 
 ## ApkTool
 
-No manual path needed: the tool automatically downloads the wrapper + jar into `apktool/` (Windows & Linux). If already present and valid, it's reused.
+If ApkTool is missing or invalid, it will be downloaded automatically (wrapper + jar) into `apktool/` for Windows & Linux. If already present and valid, the existing files are reused. To supply it manually, place the files in `apktool/`:
+
+Windows:
+
+```
+apktool/
+	apktool.jar
+	apktool.bat   # wrapper for Windows
+```
+
+Linux:
+
+```
+apktool/
+	apktool.jar
+	apktool       # wrapper for Linux
+```
+
+Get ApkTool jar and wrappers from the official sources:
+- Releases (jar): https://github.com/iBotPeaches/Apktool/releases
+- Install guide: https://apktool.org/docs/install/
 
 ## Purpose
 
