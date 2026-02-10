@@ -254,9 +254,11 @@ class CrunchyrollAnalyzer:
                 else:
                     print("\n⚠️  WARNING: Credentials extracted but validation failed!")
                     if resolved_mode == 'tv':
-                        print("Device-code flow failed or incomplete.")
+                        error_reason = tv_validation.get('error_reason', 'Unknown error')
+                        print(f"Reason: {error_reason}")
                     else:
-                        print("The tokens may be outdated or there might be a network issue.")
+                        error_reason = validation_result.get('error_reason', 'Unknown error')
+                        print(f"Reason: {error_reason}")
                     print("You can still try using them, but they might not work.")
             else:
                 print("\nFailed to extract credentials.")

@@ -82,6 +82,34 @@ class CredentialValidator:
         anonymous_id = str(uuid.uuid4())
         return device_type, device_name, device_id, anonymous_id
 
+    def _classify_network_error(self, exception):
+        """Classify network exceptions into user-friendly error categories."""
+        error_str = str(exception).lower()
+        
+        # Windows socket errors
+        if 'winerror 10013' in error_str:
+            return "Connection blocked (no internet or network restrictions)"
+        if 'winerror 10060' in error_str or 'timed out' in error_str:
+            return "Connection timeout (network unreachable)"
+        if 'winerror 10061' in error_str or 'connection refused' in error_str:
+            return "Connection refused (service unavailable)"
+        
+        # Generic connection errors
+        if 'failed to establish' in error_str or 'connection error' in error_str:
+            return "Connection failed (check internet connection)"
+        if 'max retries exceeded' in error_str:
+            return "Connection failed (network unavailable)"
+        
+        # SSL/TLS errors
+        if 'ssl' in error_str or 'certificate' in error_str:
+            return "SSL/TLS error (certificate issue)"
+        
+        # DNS errors
+        if 'nodename nor servname provided' in error_str or 'name resolution' in error_str:
+            return "DNS resolution failed (check internet connection)"
+        
+        return f"Network error: {str(exception)[:80]}"
+
     def validate_credentials(self, auth_token: str, user_agent: str):
         print("\n=== PHASE 4: VALIDATING CREDENTIALS ===")
         print("Testing authentication with:")
@@ -127,6 +155,7 @@ class CredentialValidator:
                     return {
                         'valid': False,
                         'status_code': response.status_code,
+                        'error_reason': 'Invalid credentials (no access token)',
                         'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
                         'message': 'No access_token in response',
                     }
@@ -135,21 +164,26 @@ class CredentialValidator:
                     return {
                         'valid': False,
                         'status_code': response.status_code,
+                        'error_reason': 'Invalid API response (parse error)',
                         'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
                         'message': 'Non-JSON response received',
                     }
-            print(f"❌ Authentication FAILED - Status code: {response.status_code}")
+            error_msg = f"Authentication failed (HTTP {response.status_code})"
+            print(f"❌ {error_msg}")
             return {
                 'valid': False,
                 'status_code': response.status_code,
+                'error_reason': error_msg,
                 'response': response.text[:200] + "..." if len(response.text) > 200 else response.text,
                 'message': f'HTTP error: {response.status_code}',
             }
         except Exception as e:
-            print(f"❌ Authentication ERROR - Request failed: {e}")
+            error_msg = self._classify_network_error(e)
+            print(f"❌ {error_msg}")
             return {
                 'valid': False,
                 'status_code': None,
+                'error_reason': error_msg,
                 'error': str(e),
                 'message': f'Request failed: {e}',
             }
@@ -166,17 +200,18 @@ class CredentialValidator:
                 - Step 2: POST /auth/v1/token with form fields (grant_type, scope, client_id, client_secret) + cookie + ETP-Anonymous-ID
           3. Device code generation POST /auth/v1/device/code with Basic auth base64(client_id:client_secret) + cookie.
 
-        Returns dict including user_code/device_code on success.
+        Returns dict including user_code/device_code on success, error_reason on failure.
         """
         print("\n=== PHASE 4 (TV): VALIDATING TV CREDENTIALS ===")
         session = self.scraper
         base = "https://www.crunchyroll.com"
         browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=10"
+        
         # Step 1: 401 to get __cf_bm
         print("[TV] Step 1: Initial browse request to obtain __cf_bm cookie...")
         headers1 = {
             "User-Agent": user_agent,
-            "Authorization": "Bearer",  # empty bearer triggers 401
+            "Authorization": "Bearer",
             "Accept": "application/json",
             "Accept-Charset": "UTF-8",
         }
@@ -193,7 +228,13 @@ class CredentialValidator:
             if not cf_cookie:
                 print("[TV] Warning: __cf_bm cookie not obtained (continuing anyway).")
         except Exception as e:
-            print(f"[TV] Browse request failed: {e}")
+            error_msg = self._classify_network_error(e)
+            print(f"[TV] ❌ {error_msg}")
+            return {
+                'valid': False,
+                'error_reason': error_msg,
+                'error_step': 'browse_request',
+            }
 
         # Step 2: Anonymous token request
         print("[TV] Step 2: Anonymous token request (client_id + client_secret)...")
@@ -225,12 +266,34 @@ class CredentialValidator:
                         print("[TV] Anonymous access_token acquired (truncated):", access_token[:40] + "...")
                     else:
                         print("[TV] No access_token in anonymous response.")
+                        return {
+                            'valid': False,
+                            'error_reason': 'Invalid credentials (no access token)',
+                            'error_step': 'anonymous_token',
+                        }
                 except Exception:
                     print("[TV] Failed to parse JSON from anonymous token response.")
+                    return {
+                        'valid': False,
+                        'error_reason': 'Invalid API response (parse error)',
+                        'error_step': 'anonymous_token',
+                    }
             else:
-                print(f"[TV] Anonymous token request failed status={r2.status_code}")
+                error_msg = f"Authentication failed (HTTP {r2.status_code})"
+                print(f"[TV] ❌ {error_msg}")
+                return {
+                    'valid': False,
+                    'error_reason': error_msg,
+                    'error_step': 'anonymous_token',
+                }
         except Exception as e:
-            print(f"[TV] Anonymous token request error: {e}")
+            error_msg = self._classify_network_error(e)
+            print(f"[TV] ❌ {error_msg}")
+            return {
+                'valid': False,
+                'error_reason': error_msg,
+                'error_step': 'anonymous_token',
+            }
 
         # Step 3: Device code generation
         print("[TV] Step 3: Device code generation...")
@@ -259,16 +322,37 @@ class CredentialValidator:
                         print(f"[TV] Device code OK: user_code={user_code} device_code={device_code}")
                     else:
                         print("[TV] Missing user_code/device_code in response.")
+                        return {
+                            'valid': False,
+                            'error_reason': 'Invalid API response (missing device codes)',
+                            'error_step': 'device_code',
+                        }
                 except Exception:
                     print("[TV] Failed to parse JSON from device code response.")
+                    return {
+                        'valid': False,
+                        'error_reason': 'Invalid API response (parse error)',
+                        'error_step': 'device_code',
+                    }
             else:
-                print(f"[TV] Device code request failed status={r3.status_code}")
+                error_msg = f"Device code request failed (HTTP {r3.status_code})"
+                print(f"[TV] ❌ {error_msg}")
+                return {
+                    'valid': False,
+                    'error_reason': error_msg,
+                    'error_step': 'device_code',
+                }
         except Exception as e:
-            print(f"[TV] Device code request error: {e}")
+            error_msg = self._classify_network_error(e)
+            print(f"[TV] ❌ {error_msg}")
+            return {
+                'valid': False,
+                'error_reason': error_msg,
+                'error_step': 'device_code',
+            }
 
-        success = user_code is not None and device_code is not None
         return {
-            'valid': success,
+            'valid': True,
             'cf_bm': cf_cookie,
             'anonymous_access_token_present': access_token is not None,
             'user_code': user_code,
