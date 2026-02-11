@@ -1,14 +1,15 @@
 import uuid
 import random
 import json
-import cloudscraper
+from curl_cffi import requests
 
 
 class CredentialValidator:
     """Validates extracted credentials by attempting an auth token request."""
 
     def __init__(self):
-        self.scraper = cloudscraper.create_scraper()
+        # Impersonate Chrome 110 to match a modern browser TLS fingerprint
+        self.session = requests.Session(impersonate="chrome110")
 
     def _generate_random_device(self, category: str = "mobile"):
         """Return a random (device_type, device_name, device_id, anonymous_id).
@@ -137,7 +138,7 @@ class CredentialValidator:
         try:
             print(f"Sending authentication request to {url}...")
             print(f"Using device: {device_name} ({device_type})")
-            response = self.scraper.post(url, headers=headers, data=data)
+            response = self.session.post(url, headers=headers, data=data)
             if response.status_code == 200:
                 try:
                     response_json = response.json()
@@ -203,7 +204,7 @@ class CredentialValidator:
         Returns dict including user_code/device_code on success, error_reason on failure.
         """
         print("\n=== PHASE 4 (TV): VALIDATING TV CREDENTIALS ===")
-        session = self.scraper
+        session = self.session
         base = "https://www.crunchyroll.com"
         browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=10"
         
