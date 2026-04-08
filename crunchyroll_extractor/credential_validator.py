@@ -1,8 +1,9 @@
 import uuid
 import random
 import json
+import secrets
 from curl_cffi import requests
-
+from .config import PREFETCH_USER_AGENT_TEMPLATE
 
 class CredentialValidator:
     """Validates extracted credentials by attempting an auth token request."""
@@ -111,7 +112,50 @@ class CredentialValidator:
         
         return f"Network error: {str(exception)[:80]}"
 
-    def validate_credentials(self, auth_token: str, user_agent: str):
+    def _generate_datadog_headers(self):
+        """Generate random Datadog telemetry headers to match expected client behavior."""
+        trace_id = secrets.randbits(63)
+        parent_id = secrets.randbits(63)
+        tid = secrets.token_hex(8) + "00000000"
+        rsid = str(uuid.uuid4())
+        trace_id_hex = f"{trace_id:016x}"
+        parent_id_hex = f"{parent_id:016x}"
+        traceparent = f"00-{tid}{trace_id_hex}-{parent_id_hex}-00"
+
+        return {
+            "x-datadog-trace-id": str(trace_id),
+            "x-datadog-parent-id": str(parent_id),
+            "x-datadog-origin": "rum",
+            "x-datadog-tags": f"_dd.p.tid={tid},_dd.p.rsid={rsid}",
+            "x-datadog-sampling-priority": "0",
+            "traceparent": traceparent,
+            "tracestate": f"dd=p:{parent_id};s:0;o:rum"
+        }
+
+    def _prefetch_mobile_cookie(self, user_agent: str, version_code: str, device_name: str, device_type: str):
+        """Prefetch Cloudflare cookie using the CF-protected XML endpoint."""
+        url = "https://www.crunchyroll.com/i18n/cr-android-app/katamari/en-US.xml"
+        
+        # Parse version back from the main user agent string, or fallback to an empty string.
+        version = user_agent.split('/')[1].split()[0] if '/' in user_agent else "3.105.1"
+        prefetch_ua = PREFETCH_USER_AGENT_TEMPLATE.format(version, version_code, device_name, device_type.split()[0], device_name.split()[0])
+        
+        headers = {
+            "User-Agent": prefetch_ua,
+            "Accept": "application/json",
+            "Accept-Charset": "UTF-8",
+            "x-datadog-sampling-priority": "0",
+            "traceparent": self._generate_datadog_headers()["traceparent"],
+            "Host": "www.crunchyroll.com",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
+        }
+        try:
+            self.session.get(url, headers=headers)
+        except Exception:
+            pass  # Fail gracefully
+
+    def validate_credentials(self, auth_token: str, user_agent: str, version_code: str = "1102"):
         print("\n=== PHASE 4: VALIDATING CREDENTIALS ===")
         print("Testing authentication with:")
         print(f"Auth Token: {auth_token}")
@@ -119,15 +163,21 @@ class CredentialValidator:
 
         url = "https://www.crunchyroll.com/auth/v1/token"
         device_type, device_name, device_id, anonymous_id = self._generate_random_device('mobile')
+
+        print("Prefetching Cloudflare __cf_bm cookie...")
+        self._prefetch_mobile_cookie(user_agent, version_code, device_name, device_type)
+
         headers = {
             "Host": "www.crunchyroll.com",
-            "Content-Length": "127",
             "authorization": f"Basic {auth_token}",
             "etp-anonymous-id": anonymous_id,
             "content-type": "application/x-www-form-urlencoded",
             "accept-encoding": "gzip",
             "user-agent": user_agent,
         }
+        
+        headers.update(self._generate_datadog_headers())
+
         data = {
             "grant_type": "client_id",
             "device_id": device_id,
@@ -206,7 +256,7 @@ class CredentialValidator:
         print("\n=== PHASE 4 (TV): VALIDATING TV CREDENTIALS ===")
         session = self.session
         base = "https://www.crunchyroll.com"
-        browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=10"
+        browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=1600"
         
         # Step 1: 401 to get __cf_bm
         print("[TV] Step 1: Initial browse request to obtain __cf_bm cookie...")
@@ -215,18 +265,16 @@ class CredentialValidator:
             "Authorization": "Bearer",
             "Accept": "application/json",
             "Accept-Charset": "UTF-8",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
         }
         cf_cookie = None
         try:
-            r1 = session.get(browse_url, headers=headers1, allow_redirects=False)
-            set_cookie = r1.headers.get('Set-Cookie', '')
-            if '__cf_bm=' in set_cookie:
-                import re
-                m = re.search(r'__cf_bm=([^;]+)', set_cookie)
-                if m:
-                    cf_cookie = m.group(1)
-                    print(f"[TV] Got __cf_bm cookie fragment: {cf_cookie[:20]}...")
-            if not cf_cookie:
+            r1 = session.get(browse_url, headers=headers1)
+            cf_cookie = r1.cookies.get('__cf_bm')
+            if cf_cookie:
+                print(f"[TV] Got __cf_bm cookie fragment: {cf_cookie[:20]}...")
+            else:
                 print("[TV] Warning: __cf_bm cookie not obtained (continuing anyway).")
         except Exception as e:
             error_msg = self._classify_network_error(e)
@@ -253,9 +301,9 @@ class CredentialValidator:
             "Accept": "application/json",
             "Accept-Charset": "UTF-8",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
         }
-        if cf_cookie:
-            headers2["Cookie"] = f"__cf_bm={cf_cookie}"
         access_token = None
         try:
             r2 = session.post(anon_url, data=form_data, headers=headers2)
@@ -307,13 +355,14 @@ class CredentialValidator:
             "Accept-Charset": "UTF-8",
             "Authorization": f"Basic {basic_auth}",
             "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": "0",
+            "Connection": "Keep-Alive",
+            "Accept-Encoding": "gzip",
         }
-        if cf_cookie:
-            headers3["Cookie"] = f"__cf_bm={cf_cookie}"
         user_code = None
         device_code = None
         try:
-            r3 = session.post(device_url, headers=headers3, data={})
+            r3 = session.post(device_url, headers=headers3)
             if r3.status_code == 200:
                 try:
                     js = r3.json()

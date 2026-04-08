@@ -147,6 +147,7 @@ class CrunchyrollAnalyzer:
             vn, vc = extract_version_name_and_code(self.decompiled_dir)
             tv_version = f"{vn}_{vc}" if vn and vc else (vn or "unknown")
             mobile_version = vn or "unknown"
+            version_code = vc or "1102"
 
             searcher = CredentialSearcher(self.decompiled_dir)
             if resolved_mode == 'tv':
@@ -207,7 +208,7 @@ class CrunchyrollAnalyzer:
                     auth_string = f"{client_id}:{secret_id}"
                     base64_auth = base64.b64encode(auth_string.encode('ascii')).decode('ascii')
                     user_agent_mobile = USER_AGENT_TEMPLATE.format(mobile_version)
-                    validation_result = self.validator.validate_credentials(base64_auth, user_agent_mobile)
+                    validation_result = self.validator.validate_credentials(base64_auth, user_agent_mobile, version_code)
                     final_valid = validation_result['valid']
 
                     latest_json_path_mobile = self._generate_latest_json(
