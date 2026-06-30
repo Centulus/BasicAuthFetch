@@ -1,3 +1,4 @@
+import base64
 import uuid
 import random
 import json
@@ -13,12 +14,7 @@ class CredentialValidator:
         self.session = requests.Session(impersonate="chrome110")
 
     def _generate_random_device(self, category: str = "mobile"):
-        """Return a random (device_type, device_name, device_id, anonymous_id).
-
-        category:
-          - 'mobile' (default)
-          - 'tv'
-        """
+        """Return a random (device_type, device_name, device_id, anonymous_id)."""
         mobile_devices = [
             ("Samsung SM-G998B", "Galaxy S21 Ultra"),
             ("Samsung SM-G991B", "Galaxy S21"),
@@ -113,7 +109,7 @@ class CredentialValidator:
         return f"Network error: {str(exception)[:80]}"
 
     def _generate_datadog_headers(self):
-        """Generate random Datadog telemetry headers to match expected client behavior."""
+        """Generate random Datadog telemetry headers."""
         trace_id = secrets.randbits(63)
         parent_id = secrets.randbits(63)
         tid = secrets.token_hex(8) + "00000000"
@@ -136,7 +132,6 @@ class CredentialValidator:
         """Prefetch Cloudflare cookie using the CF-protected XML endpoint."""
         url = "https://www.crunchyroll.com/i18n/cr-android-app/katamari/en-US.xml"
         
-        # Parse version back from the main user agent string, or fallback to an empty string.
         version = user_agent.split('/')[1].split()[0] if '/' in user_agent else "3.105.1"
         prefetch_ua = PREFETCH_USER_AGENT_TEMPLATE.format(version, version_code, device_name, device_type.split()[0], device_name.split()[0])
         
@@ -239,26 +234,13 @@ class CredentialValidator:
                 'message': f'Request failed: {e}',
             }
 
-    # ---------------- TV specific flow -----------------
     def validate_tv_credentials(self, client_id: str, client_secret: str, user_agent: str):
-        """Validate Android TV credentials following the described multi-step flow.
-
-        Steps:
-          1. Seed __cf_bm cookie via a 401 browse request (Bearer empty) -> capture cookie.
-          2. Anonymous token request (grant_type=client_id & scope=offline_access) using client_id & client_secret (Basic or form?)
-             Provided flow shows form with client_secret (no Basic) BUT the example for device/code uses Basic auth.
-             We'll follow the provided examples literally:
-                - Step 2: POST /auth/v1/token with form fields (grant_type, scope, client_id, client_secret) + cookie + ETP-Anonymous-ID
-          3. Device code generation POST /auth/v1/device/code with Basic auth base64(client_id:client_secret) + cookie.
-
-        Returns dict including user_code/device_code on success, error_reason on failure.
-        """
+        """Validate TV credentials via a 3-step flow: CF cookie seed → anonymous token → device code."""
         print("\n=== PHASE 4 (TV): VALIDATING TV CREDENTIALS ===")
         session = self.session
         base = "https://www.crunchyroll.com"
         browse_url = f"{base}/content/v2/discover/browse?locale=en-US&sort_by=popularity&n=1600"
         
-        # Step 1: 401 to get __cf_bm
         print("[TV] Step 1: Initial browse request to obtain __cf_bm cookie...")
         headers1 = {
             "User-Agent": user_agent,
@@ -285,7 +267,6 @@ class CredentialValidator:
                 'error_step': 'browse_request',
             }
 
-        # Step 2: Anonymous token request
         print("[TV] Step 2: Anonymous token request (client_id + client_secret)...")
         anon_url = f"{base}/auth/v1/token"
         anonymous_id = str(uuid.uuid4())
@@ -344,11 +325,9 @@ class CredentialValidator:
                 'error_step': 'anonymous_token',
             }
 
-        # Step 3: Device code generation
         print("[TV] Step 3: Device code generation...")
         device_url = f"{base}/auth/v1/device/code"
-        import base64 as _b64
-        basic_auth = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        basic_auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
         headers3 = {
             "User-Agent": user_agent,
             "Accept": "application/json",

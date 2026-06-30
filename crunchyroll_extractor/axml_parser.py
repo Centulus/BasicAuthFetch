@@ -1,8 +1,4 @@
-"""Parse Android Binary XML (AXML) without external tools.
-
-Supports both UTF-8 and UTF-16 string pools. Returns version info and
-TV/mobile detection from the binary AndroidManifest.xml embedded in APKs.
-"""
+"""Parse Android Binary XML (AXML) without external tools."""
 import struct
 
 
@@ -38,28 +34,13 @@ def _read_string_pool(data: bytes, chunk_start: int) -> list[str]:
     return strings
 
 
-# AXML chunk types
-_CHUNK_STRING_POOL  = 0x0001
-_CHUNK_START_ELEM   = 0x0102
-_CHUNK_END_ELEM     = 0x0103
-
-# Android binary value types
-_TYPE_STRING  = 0x03
-_TYPE_INT_DEC = 0x10
-_TYPE_INT_HEX = 0x11
-_TYPE_INT_BOOL = 0x12
+_CHUNK_STRING_POOL = 0x0001
+_CHUNK_START_ELEM  = 0x0102
+_TYPE_STRING       = 0x03
 
 
 def parse_manifest(axml_data: bytes) -> dict:
-    """Parse a binary AndroidManifest.xml.
-
-    Returns:
-        {
-            'versionName': str | None,
-            'versionCode': str | None,
-            'is_tv': bool,
-        }
-    """
+    """Parse a binary AndroidManifest.xml. Returns versionName, versionCode, is_tv."""
     result = {'versionName': None, 'versionCode': None, 'is_tv': False}
     if len(axml_data) < 8:
         return result

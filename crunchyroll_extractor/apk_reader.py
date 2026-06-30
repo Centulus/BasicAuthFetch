@@ -1,12 +1,8 @@
-"""Read APK/APKM/XAPK/APKS packages into memory without filesystem extraction.
-
-Returns raw bytes for AndroidManifest.xml and all classes*.dex files from
-the main base APK inside the container, or from the APK itself.
-"""
+"""Read APK/APKM/XAPK/APKS packages into memory without filesystem extraction."""
 import io
 import os
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -61,13 +57,7 @@ def _largest_apk_in_zip(container: zipfile.ZipFile) -> str | None:
 
 
 def load_package(package_path: str) -> ApkContents | None:
-    """Load an APK/APKM/XAPK/APKS/ZIP package and return in-memory contents.
-
-    Supports:
-      - Single APK file
-      - APKM / XAPK / APKS container (ZIP of APKs) → uses largest APK inside
-      - Directory containing APK files → uses largest .apk found
-    """
+    """Load an APK/APKM/XAPK/APKS/ZIP/directory and return its contents in memory."""
     if not os.path.exists(package_path):
         print(f"[apk_reader] Path not found: {package_path}")
         return None

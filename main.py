@@ -1,11 +1,4 @@
-"""Crunchyroll credential extractor – no decompilation required.
-
-Reads DEX string tables and binary AndroidManifest.xml directly from the
-APK/APKM file. No APKTool, no Java, no smali files. Typical runtime: 1-3 s.
-
-Usage:
-    python main.py [--tv|--mobile] path/to/app.apkm [--no-clean] [-h]
-"""
+"""Crunchyroll credential extractor – reads DEX and binary manifest directly."""
 import base64
 import json
 import os
@@ -32,7 +25,6 @@ from crunchyroll_extractor.dex_extractor import DexExtractor
 from crunchyroll_extractor.credential_validator import CredentialValidator
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _short_mobile_version(version: str) -> str:
     """Strip trailing build segment from 4-part version (e.g. 3.91.1.960 → 3.91.1)."""
@@ -50,7 +42,6 @@ def _write_json(path: str, data: dict) -> None:
 
 
 class CrunchyrollAnalyzer:
-    """Orchestrates DEX-based extraction, validation and output."""
 
     def __init__(self) -> None:
         self.validator = CredentialValidator()
@@ -139,18 +130,13 @@ class CrunchyrollAnalyzer:
     # ── main entry point ─────────────────────────────────────────────────────
 
     def run(self, package_path: str, *, mode: str = 'auto') -> bool:
-        """Run the full extraction pipeline.
-
-        mode: 'auto' | 'tv' | 'mobile'
-        Returns True on success, False on failure.
-        """
+        """Run the full extraction pipeline. mode: 'auto' | 'tv' | 'mobile'."""
         print("=== CRUNCHYROLL CREDENTIAL EXTRACTOR (no-decompile) ===")
         print(f"Package : {package_path}")
         print("=" * 55)
 
         t_start = time.time()
 
-        # ── Phase 1: load package ────────────────────────────────────────────
         print("\n=== PHASE 1: LOADING PACKAGE ===")
         contents = load_package(package_path)
         if contents is None:
@@ -159,7 +145,6 @@ class CrunchyrollAnalyzer:
         print(f"Loaded {contents.apk_name} ({contents.file_size_str})")
         print(f"  DEX files : {len(contents.dex_files)}")
 
-        # ── Phase 2: parse manifest ──────────────────────────────────────────
         print("\n=== PHASE 2: PARSING MANIFEST ===")
         manifest = parse_manifest(contents.manifest_data)
         version_name = manifest['versionName'] or 'unknown'
@@ -169,14 +154,12 @@ class CrunchyrollAnalyzer:
         print(f"  versionCode : {version_code}")
         print(f"  Android TV  : {detected_tv}")
 
-        # resolve mode
         if mode == 'auto':
             resolved = 'tv' if detected_tv else 'mobile'
             print(f"  [AUTO] resolved mode → {resolved.upper()}")
         else:
             resolved = mode
 
-        # ── Phase 3: extract credentials ─────────────────────────────────────
         if resolved == 'tv':
             client_id, secret_id = self.extractor.find_tv_credentials(contents.dex_files)
         else:
@@ -193,7 +176,6 @@ class CrunchyrollAnalyzer:
             print("\nERROR: Credentials not found.")
             return False
 
-        # ── Phase 4: validate ────────────────────────────────────────────────
         if resolved == 'tv':
             tv_version = f"{version_name}_{version_code}"
             user_agent = TV_USER_AGENT_TEMPLATE.format(tv_version)
@@ -209,14 +191,12 @@ class CrunchyrollAnalyzer:
 
         valid = validation.get('valid', False)
 
-        # ── Phase 5: write output ────────────────────────────────────────────
         if resolved == 'tv':
             self._emit_tv(client_id, secret_id, version_name, version_code, validation)
         else:
             app_version = _short_mobile_version(version_name)
             self._emit_mobile(client_id, secret_id, app_version, contents.file_size_str, validation)
 
-        # ── Summary ──────────────────────────────────────────────────────────
         elapsed = time.time() - t_start
         print("\n" + "=" * 55)
         if valid:
@@ -230,7 +210,6 @@ class CrunchyrollAnalyzer:
         return valid
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_args(argv: list[str]) -> tuple[str | None, str, bool]:
     """Return (package_path, mode, show_help)."""
@@ -247,7 +226,6 @@ def _parse_args(argv: list[str]) -> tuple[str | None, str, bool]:
     else:
         mode = 'auto'
 
-    # Extract path: first positional arg not starting with '-'
     path: str | None = None
     skip_next = False
     for i, a in enumerate(args):
@@ -255,7 +233,6 @@ def _parse_args(argv: list[str]) -> tuple[str | None, str, bool]:
             skip_next = False
             continue
         if a in ('--tv', '--mobile', '--no-clean', '-h', '--help'):
-            # value flags that consume next token as path
             if a in ('--tv', '--mobile') and i + 1 < len(args) and not args[i + 1].startswith('-') and path is None:
                 path = args[i + 1]
                 skip_next = True

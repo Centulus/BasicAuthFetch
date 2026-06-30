@@ -1,15 +1,4 @@
-"""Extract Crunchyroll credentials from DEX files without decompilation.
-
-Strategy:
-  Mobile: scan all DEX code items (methods) for ones that reference ≥2 known
-          Crunchyroll URL/string patterns, then pick the secret/client pair
-          closest together in bytecode order within the same method.
-  TV:     locate TV_CONSTANTS_CLASS → extract strings from its static
-          initializer → apply the same length heuristic as the original smali
-          scanner.
-
-All parsing is pure Python / stdlib – zero external tools.
-"""
+"""Extract Crunchyroll credentials from DEX files without decompilation."""
 import re
 import struct
 import time
@@ -185,14 +174,11 @@ class DexExtractor:
 
             self._log(f"  [DEX {idx}] Found {TV_CONSTANTS_CLASS} → {len(const_strings)} strings")
 
-            # Mirror original heuristic: first 18-24 alnum (no dots) is client,
-            # then the first 28-36 alnum/dash/underscore after it is secret.
             client_id = None
             secret_id = None
             for i, s in enumerate(const_strings):
                 if client_id is None and _RE_CLIENT_TV.match(s) and '.' not in s:
                     client_id = s
-                    # search next 8 strings for secret
                     for s2 in const_strings[i + 1: i + 9]:
                         if _RE_SECRET_TV.match(s2) and '.' not in s2:
                             secret_id = s2
@@ -230,7 +216,6 @@ class DexExtractor:
             if not strings:
                 continue
 
-            # Quick check: any target pattern in this DEX at all?
             target_ids = {i for i, s in enumerate(strings) if any(p in s for p in TARGET_PATTERNS)}
             if not target_ids:
                 continue
@@ -243,19 +228,17 @@ class DexExtractor:
                 if target_hits < 2:
                     continue
 
-                # Find all secrets and clients in this method (by bytecode order)
                 secrets = [r for r in refs if _RE_SECRET_MOBILE.match(strings[r.string_id])]
                 clients = [r for r in refs if _RE_CLIENT_MOBILE.match(strings[r.string_id])]
                 if not secrets or not clients:
                     continue
 
-                # Exclude any candidate that is itself a target pattern string
+                # exclude target-pattern strings that happen to match the length regexes
                 secrets = [r for r in secrets if strings[r.string_id] not in TARGET_PATTERNS]
                 clients = [r for r in clients if strings[r.string_id] not in TARGET_PATTERNS]
                 if not secrets or not clients:
                     continue
 
-                # Pick the (secret, client) pair with smallest byte-offset distance
                 for sr in secrets:
                     for cr in clients:
                         dist = abs(sr.byte_offset - cr.byte_offset)
