@@ -155,7 +155,12 @@ class DexExtractor:
     # ── TV ──────────────────────────────────────────────────────────────────
 
     def find_tv_credentials(self, dex_files: list[bytes]) -> tuple[str | None, str | None]:
-        """Find TV client_id and client_secret from the API Constants class."""
+        """Find TV client_id and client_secret from the API Constants class.
+
+        The class exposes a Kotlin when-expression per credential type: each
+        getter method lists all platform-specific values (FireTV first) with
+        the default/PROD branch last.  We take the last match per method.
+        """
         self._log(f"\n=== PHASE 2 (TV): SCANNING {len(dex_files)} DEX FILE(S) ===")
         t0 = time.time()
 
@@ -168,30 +173,21 @@ class DexExtractor:
             if not any(TV_CONSTANTS_CLASS in t for t in types):
                 continue
 
-            const_strings = _class_all_strings(dex, strings, types, TV_CONSTANTS_CLASS)
-            if not const_strings:
-                continue
+            self._log(f"  [DEX {idx}] Found {TV_CONSTANTS_CLASS}")
 
-            self._log(f"  [DEX {idx}] Found {TV_CONSTANTS_CLASS} → {len(const_strings)} strings")
+            client_id: str | None = None
+            secret_id: str | None = None
 
-            client_id = None
-            secret_id = None
-            for i, s in enumerate(const_strings):
-                if client_id is None and _RE_CLIENT_TV.match(s) and '.' not in s:
-                    client_id = s
-                    for s2 in const_strings[i + 1: i + 9]:
-                        if _RE_SECRET_TV.match(s2) and '.' not in s2:
-                            secret_id = s2
-                            break
-                    if secret_id:
-                        break
-
-            if not secret_id:
-                # fallback: first plausible secret in the whole class
-                for s in const_strings:
-                    if _RE_SECRET_TV.match(s) and '.' not in s and s != client_id:
-                        secret_id = s
-                        break
+            for cls, _acc, refs in _iter_class_methods(dex, strings, types):
+                if cls != TV_CONSTANTS_CLASS:
+                    continue
+                method_strs = [strings[r.string_id] for r in refs]
+                clients = [s for s in method_strs if _RE_CLIENT_TV.match(s) and '.' not in s]
+                secrets = [s for s in method_strs if _RE_SECRET_TV.match(s) and '.' not in s]
+                if clients and not secrets:
+                    client_id = clients[-1]
+                elif secrets and not clients:
+                    secret_id = secrets[-1]
 
             if client_id and secret_id:
                 self._log(f"  Client ID: {client_id}")
