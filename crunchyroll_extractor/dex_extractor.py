@@ -18,6 +18,21 @@ _RE_SECRET_TV     = re.compile(r'^[A-Za-z0-9_\-]{28,36}$')
 _OP_CONST_STRING       = 0x1A   # 4-byte: opcode(1) reg(1) string_idx(2)
 _OP_CONST_STRING_JUMBO = 0x1B   # 6-byte: opcode(1) reg(1) string_idx(4)
 
+# Dalvik instruction widths in 16-bit code units, by opcode range (start, end, width).
+_INSN_WIDTH_RANGES = [
+    (0x00, 0x01, 1), (0x02, 0x02, 2), (0x03, 0x03, 3), (0x04, 0x04, 1),
+    (0x05, 0x05, 2), (0x06, 0x06, 3), (0x07, 0x07, 1), (0x08, 0x08, 2),
+    (0x09, 0x09, 3), (0x0a, 0x0e, 1), (0x0f, 0x12, 1), (0x13, 0x13, 2),
+    (0x14, 0x14, 3), (0x15, 0x16, 2), (0x17, 0x17, 3), (0x18, 0x18, 5),
+    (0x19, 0x1a, 2), (0x1b, 0x1b, 3), (0x1c, 0x1c, 2), (0x1d, 0x1e, 1),
+    (0x1f, 0x20, 2), (0x21, 0x21, 1), (0x22, 0x23, 2), (0x24, 0x26, 3),
+    (0x27, 0x28, 1), (0x29, 0x29, 2), (0x2a, 0x2c, 3), (0x2d, 0x3d, 2),
+    (0x3e, 0x43, 1), (0x44, 0x6d, 2), (0x6e, 0x72, 3), (0x73, 0x73, 1),
+    (0x74, 0x78, 3), (0x79, 0x8f, 1), (0x90, 0xaf, 2), (0xb0, 0xcf, 1),
+    (0xd0, 0xf9, 2), (0xfa, 0xfb, 4), (0xfc, 0xfd, 3), (0xfe, 0xff, 2),
+]
+_INSN_WIDTH = {op: w for lo, hi, w in _INSN_WIDTH_RANGES for op in range(lo, hi + 1)}
+
 
 # ─────────────────────────── low-level DEX helpers ──────────────────────────
 
@@ -72,6 +87,25 @@ class _StringRef(NamedTuple):
     string_id:   int
 
 
+def _insn_width_units(insns: bytes, j: int) -> int:
+    """Width (in 16-bit code units) of the instruction at byte offset j."""
+    op = insns[j]
+    if op == 0x00 and j + 1 < len(insns):
+        ident = insns[j + 1]
+        if ident in (0x01, 0x02, 0x03):
+            size = int.from_bytes(insns[j + 2:j + 4], 'little') if j + 4 <= len(insns) else 0
+            if ident == 0x01:      # packed-switch-payload
+                return 4 + size * 2
+            if ident == 0x02:      # sparse-switch-payload
+                return 2 + size * 4
+            # fill-array-data-payload
+            elem_width = int.from_bytes(insns[j + 2:j + 4], 'little') if j + 4 <= len(insns) else 0
+            size2 = int.from_bytes(insns[j + 4:j + 8], 'little') if j + 8 <= len(insns) else 0
+            data_bytes = size2 * elem_width
+            return 4 + (data_bytes + 1) // 2
+    return _INSN_WIDTH.get(op, 1)
+
+
 def _scan_code_item(insns: bytes, n_strings: int) -> list[_StringRef]:
     """Return all const-string refs (opcode 0x1A/0x1B) from an instruction buffer."""
     refs: list[_StringRef] = []
@@ -90,7 +124,7 @@ def _scan_code_item(insns: bytes, n_strings: int) -> list[_StringRef]:
                 refs.append(_StringRef(j, sid))
             j += 6
         else:
-            j += 2
+            j += _insn_width_units(insns, j) * 2
     return refs
 
 
